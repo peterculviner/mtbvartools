@@ -24,11 +24,11 @@ def subproc(func):
             return output
     return wrapper
 
-def findClient(threads_per_worker=1):
+def findClient(n_workers=None, threads_per_worker=1, **kwargs):
     try:
         get_client()
     except ValueError:
-        LocalCluster(threads_per_worker=threads_per_worker).get_client()
+        LocalCluster(n_workers=n_workers, threads_per_worker=threads_per_worker, **kwargs).get_client()
     return get_client()
 
 
