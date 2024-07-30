@@ -23,7 +23,17 @@ def editMutect2VCF(in_path, out_path, fail_path=None, filter_functions=None):
                 raise ValueError(f'Unexpected GT value for Mutect2 in record\n{record}')
             # recalculate AF
             AD = record.samples[sample]['AD']
-            record.samples[sample]['AF'] = AD[1] / (AD[0] + AD[1])
+            AF = AD[1] / (AD[0] + AD[1])
+            record.samples[sample]['AF'] = AF
+            # reset GT based on haploid AD support
+            record.samples[sample].phased = False  # remove phasing
+            if AF == 1:  # no evidence for mixture
+                record.samples[sample]['GT'] = (1, 1)
+            elif AF > 0:  # possible mixed support
+                record.samples[sample]['GT'] = (0, 1)
+            else:  # no evidence for ALT, record fails
+                failout.write(record)
+                continue
             # write to fail or pass depending on filters
             if fail_path is not None and filter_functions is not None and not np.all([f(record) for f in filter_functions]):
                 failout.write(record)
@@ -98,7 +108,8 @@ if not args.overwrite and os.path.exists(f'{base_dir}/{args.output}.results.csv'
 print('\nRunning Mutect2....')
 
 # --af-of-alleles-not-in-resource 0.05 to 0.0004 - using ~avg n variants / strain across L1-4 rel to H37Rv
-cmd = f'gatk --java-options "-Xmx{args.memory} -XX:ActiveProcessorCount={args.threads}" Mutect2 \
+cmd = f'export OMP_NUM_THREADS={args.threads} && \
+    gatk --java-options "-Xmx{args.memory}" Mutect2 \
     -R {args.reference} \
     -I {args.in_bam} \
     -O {base_dir}/{args.output}.vcf  \
@@ -121,7 +132,8 @@ vt.contShell(cmd)  # learn read orientations
 
 # min reads per strand down from 5 -> 1, we can do additional downstream filtering
 # remove hard filtering of AF (--min-allele-fraction 0.05), conduct own AF filtering
-cmd = f'gatk --java-options "-Xmx{args.memory} -XX:ActiveProcessorCount={args.threads}" FilterMutectCalls \
+cmd = f'export OMP_NUM_THREADS={args.threads} && \
+    gatk --java-options "-Xmx{args.memory}" FilterMutectCalls \
     -V {base_dir}/{args.output}.vcf \
     -R {args.reference} \
     -O {base_dir}/{args.output}.tmp.vcf \
