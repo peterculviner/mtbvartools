@@ -87,12 +87,14 @@ if is_paired:
                         pointer += 1
                     if pointer == len(chosen_i):
                         break
-            print(f'Wrote {pointer}/{n_fragments} reads to {fout_path}')
+            n_written = pointer
+            print(f'Wrote {n_written}/{n_fragments} reads to {fout_path}')
+            
     
     # write results and exit
     pd.DataFrame(
         columns=['avglen_1', 'stdlen_1', 'avglen_2', 'stdlen_2', 'n_required', 'n_written'],
-        data=[[np.mean(fin1_lens), np.std(fin1_lens), np.mean(fin2_lens), np.std(fin2_lens), required_fragments, pointer]],
+        data=[[np.mean(fin1_lens), np.std(fin1_lens), np.mean(fin2_lens), np.std(fin2_lens), required_fragments, n_written]],
         index=[args.output]).to_csv(
             f'{base_dir}/{args.output}.results.csv')
     sys.exit(0)
@@ -126,12 +128,13 @@ else:  # single end
                     pointer += 1
                 if pointer == len(chosen_i):
                     break
-        print(f'Wrote {pointer}/{n_fragments} reads to {fout_path}')
+        n_written = pointer
+        print(f'Wrote {n_written}/{n_fragments} reads to {fout_path}')
 
     # write results and exit
     pd.DataFrame(
         columns=['avglen_1', 'stdlen_1', 'n_required',  'n_written'],
-        data=[[np.mean(fin_lens), np.std(fin_lens), required_fragments, pointer]],
+        data=[[np.mean(fin_lens), np.std(fin_lens), required_fragments, n_written]],
         index=[args.output]).to_csv(
             f'{base_dir}/{args.output}.results.csv')
     sys.exit(0)

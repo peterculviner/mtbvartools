@@ -1,4 +1,4 @@
-from .trees import writeLabelledTree, loadTree, getMeanNodeTip, getMeanTerminalBranchLengths
+from .trees import writeLabelledTree, loadTree, getMeanNodeTip, getMeanTerminalBranchLengths, getDescendantsPerTime, getTransmissionClusters, getChildClusterFraction
 from .dasktools import findClient
 from .CallBytestream import CallBytestream
 from .KeyedByteArray import KeyedByteArray

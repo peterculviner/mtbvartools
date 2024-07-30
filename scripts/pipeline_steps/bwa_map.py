@@ -78,17 +78,19 @@ if not args.overwrite and os.path.exists(f'{base_dir}/{args.output}.results.csv'
 
 if is_paired:
     print(f'Running bwa on PE inputs....\n{fin_path1}\n{fin_path2}')
-    cmd = f'\
+    cmd = f"\
         bwa mem -t {args.threads} \
+        -R '@RG\\tID:{args.output}\\tSM:{args.output}' \
         -o {base_dir}/{args.output}.sam \
-        {args.fasta} {fin_path1} {fin_path2} 2>&1'
+        {args.fasta} {fin_path1} {fin_path2} 2>&1"
 
 else:  # single end
     print(f'Running bwa on SE input....\n{fin_path}')
-    cmd = f'\
+    cmd = f"\
         bwa mem -t {args.threads} \
+        -R '@RG\\tID:{args.output}\\tSM:{args.output}' \
         -o {base_dir}/{args.output}.sam \
-        {args.fasta} {fin_path} 2>&1'
+        {args.fasta} {fin_path} 2>&1"
 vt.contShell(cmd)
 
 # produce a sorted, indexed bam
