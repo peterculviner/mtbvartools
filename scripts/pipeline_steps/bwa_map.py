@@ -68,7 +68,7 @@ elif os.path.exists(fin_path):
 else:
     raise ValueError('No fastqs matching expected PE or SE patterns.\n' + '\n'.join([fin_path, 'or...', fin_path1, fin_path2]))
 
-base_dir = f'{args.dir}/{args.output}/bwa/'
+base_dir = f'{args.dir}/{args.output}/bwa_map/'
 os.makedirs(base_dir, exist_ok=True)
 
 if not args.overwrite and os.path.exists(f'{base_dir}/{args.output}.results.csv'):

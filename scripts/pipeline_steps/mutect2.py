@@ -23,7 +23,13 @@ def editMutect2VCF(in_path, out_path, fail_path=None, filter_functions=None):
                 raise ValueError(f'Unexpected GT value for Mutect2 in record\n{record}')
             # recalculate AF
             AD = record.samples[sample]['AD']
-            AF = AD[1] / (AD[0] + AD[1])
+            try:
+                AF = AD[1] / (AD[0] + AD[1])
+            except ZeroDivisionError:
+                AF = record.samples[sample]['AF']
+                print(f'Zero AD found writing to fail VCF:\n{record}')
+                failout.write(record)
+                continue
             record.samples[sample]['AF'] = AF
             # reset GT based on haploid AD support
             record.samples[sample].phased = False  # remove phasing

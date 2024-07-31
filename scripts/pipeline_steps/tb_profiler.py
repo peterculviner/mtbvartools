@@ -151,7 +151,7 @@ args = parser.parse_args()
 if not os.path.exists(args.in_bam):
     raise ValueError(f'BAM file {args.in_bam} not found.')
 
-base_dir = f'{args.dir}/{args.output}/tbprofiler/'
+base_dir = f'{args.dir}/{args.output}/tb_profiler/'
 os.makedirs(base_dir, exist_ok=True)
 
 if not args.overwrite and os.path.exists(f'{base_dir}/{args.output}.results.csv'):
