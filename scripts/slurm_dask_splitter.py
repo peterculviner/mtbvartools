@@ -1,6 +1,6 @@
 #!/usr/bin/env -S python -u
 
-import sys, argparse, time, os
+import sys, argparse, time, os, re
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -60,9 +60,9 @@ parser.add_argument(
 parser.add_argument(
     '--queue', default='sapphire', type=str, help='slurm queue to submit to')
 parser.add_argument(
-    '--process-per-node', default='1', type=str, help='n processes per node')
+    '--process-per-node', default=1, type=int, help='n processes per node')
 parser.add_argument(
-    '--cores-per-process', default='1', type=str, help='n cores per process')
+    '--cores-per-process', default=1, type=int, help='n cores per process')
 parser.add_argument(
     '--memory-per-process', default='4GB', type=str, help='memory per process')
 parser.add_argument(
@@ -85,10 +85,14 @@ os.makedirs(f'{outfile_dir}/workers')
 
 print('Launching client....')
 
+cores_per_node = int(args.cores_per_process) * int(args.process_per_node)
+split_memory = re.split(r"(?<=\D)(?=\d)|(?<=\d)(?=\D)", args.memory_per_process)
+memory_per_node = str(int(split_memory[0]) * int(args.process_per_node)) + ''.join(split_memory[1:])
+
 cluster = SLURMCluster(
     processes=int(args.process_per_node),
-    cores=int(args.cores_per_node),
-    memory=args.memory_per_process,
+    cores=cores_per_node,  # per node
+    memory=memory_per_node,
     queue=args.queue,
     walltime=args.walltime,
     worker_extra_args=[
