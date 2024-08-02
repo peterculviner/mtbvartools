@@ -1,26 +1,42 @@
 #!/usr/bin/env -S python -u
 
-import subprocess, sys, argparse, time, os, dask
+import sys, argparse, time, os
 import pandas as pd
 import numpy as np
 from datetime import datetime
+import mtbvartools as vt
 from dask_jobqueue import SLURMCluster
+from dask.distributed import fire_and_forget
 
-# run on command on shell while updating stdout
-def contShell(cmd, return_output=False):
-    def yieldcmd(cmd):
-        popen = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, universal_newlines=True)
-        for stdout_line in iter(popen.stdout.readline, ""):
-            yield stdout_line
-        popen.stdout.close()
-        return_code = popen.wait()
-        if return_code:
-            raise subprocess.CalledProcessError(return_code, cmd)
-    if return_output:
-        return [line for line in yieldcmd(cmd)]
-    else:
-        for line in yieldcmd(cmd):
-            print(line[:-1])
+
+def incrementalUpscale(client, start_scale, workers_per_tick, maximum_workers, wait=1):
+    cluster = client.cluster
+    current_scale = start_scale
+    while current_scale <= maximum_workers:
+        n_tasks = len(cluster.scheduler.tasks)
+        n_workers = len(cluster.scheduler.workers)
+        if n_tasks <= n_workers:
+            print(f'Number of workers, {n_workers}, greater than number of tasks, {n_tasks} - stop upscaling.')
+            break
+        time.sleep(wait)
+        cluster.scale(current_scale)
+        print(f'Working on {n_tasks} tasks, scaling {n_workers} (current) -> {current_scale} (set).')
+        current_scale += workers_per_tick
+
+def incrementalDownscale(client, wait=60):
+    idle_last_tick = set()
+    n_workers = len(client.cluster.scheduler.workers)
+    n_tasks = len(client.cluster.scheduler.tasks)
+    while n_workers > 0 or n_tasks > 0:
+        idle_this_tick = set(client.cluster.scheduler.idle.keys())
+        to_close = idle_last_tick.intersection(idle_this_tick)
+        client.retire_workers(to_close)
+        idle_last_tick = idle_this_tick
+        # description
+        print(f'Running {len(client.cluster.scheduler.tasks)} tasks on {n_workers} active workers. Closing {len(to_close)} idle workers.')
+        time.sleep(wait)
+        n_workers = len(client.cluster.scheduler.workers)
+        n_tasks = len(client.cluster.scheduler.tasks)
 
 
 # handle arguments
@@ -40,13 +56,25 @@ parser.add_argument(
     'argsheet', type=str, 
     help='path to csv containing arguments')
 parser.add_argument(
-    '-p', '--n-processes', default=10, type=int, help='number of processes to start')
+    '--max-processes', default=10, type=int, help='maximum number of processes to start')
 parser.add_argument(
-    '--job-spec', default='shared,1,1,4GB,1:00:00', type=str, help='queue,processes,cores_per_process,memory_per_process,walltime')
+    '--queue', default='sapphire', type=str, help='slurm queue to submit to')
+parser.add_argument(
+    '--process-per-node', default='1', type=str, help='n processes per node')
+parser.add_argument(
+    '--cores-per-process', default='1', type=str, help='n cores per process')
+parser.add_argument(
+    '--memory-per-process', default='4GB', type=str, help='memory per process')
+parser.add_argument(
+    '--walltime', default='1:00:00', type=str, help='memory per process')
 parser.add_argument(
     '--dashboard-address', default=':10000', type=str)
 parser.add_argument(
-    '--wait', default=2, type=float, help='wait time (s) between submissions (default: 2s)')
+    '--upscale-wait', default=1, type=float, help='wait time (s) between scale ticks (default: 1s)')
+parser.add_argument(
+    '--downscale-wait', default=30, type=float, help='wait time (s) between downscale ticks (default: 30s)')
+parser.add_argument(
+    '--initial-nodes', default=25, type=int, help='maximum number of nodes to request to start')
 args = parser.parse_args()
 
 # prepare outfile directory
@@ -55,15 +83,14 @@ os.makedirs(outfile_dir)
 os.makedirs(f'{outfile_dir}/jobs')
 os.makedirs(f'{outfile_dir}/workers')
 
-print('launching client....')
-queue, processes_per_node, cores_per_node, memory, walltime = args.job_spec.split(',')
+print('Launching client....')
 
 cluster = SLURMCluster(
-    processes=int(processes_per_node),
-    cores=int(cores_per_node),
-    memory=memory,
-    queue=queue,
-    walltime=walltime,
+    processes=int(args.process_per_node),
+    cores=int(args.cores_per_node),
+    memory=args.memory_per_process,
+    queue=args.queue,
+    walltime=args.walltime,
     worker_extra_args=[
         '--resources "jobs=1"'],
     job_extra_directives=[
@@ -71,16 +98,13 @@ cluster = SLURMCluster(
     scheduler_options={
         'dashboard_address': args.dashboard_address})
 
-# start an initial maximum of 10 nodes, this is few enough to not upset the SLURM scheduler
-current_scale = min(args.n_processes, 10 * int(processes_per_node))
-cluster.scale(current_scale)  # scale refers to the number of processes to launch
-print(f'requesting scale of {current_scale} processes....') 
+# start an initial maximum of 25 nodes, this is few enough to not upset the SLURM scheduler
+starting_scale = min(args.n_processes, int(args.initial_nodes) * int(args.process_per_node))
+cluster.scale(starting_scale)  # scale refers to the number of processes to launch
+print(f'Starting with scale of {starting_scale} processes....') 
 client = cluster.get_client()
 
-
-print('submitting work....')
-futures = []
-
+print('Submitting tasks....')
 process_df = pd.read_csv(args.argsheet)
 for i, (label, row) in enumerate(process_df.iterrows()):
     label = ''
@@ -107,19 +131,16 @@ for i, (label, row) in enumerate(process_df.iterrows()):
     pos_str = ' '.join(pos_args)
     flag_str = ' '.join(flag_args)
     cmd = f'{args.process} {pos_str} {flag_str} >> {outfile_dir}/jobs/{label}.out'
-    futures.append(client.submit(contShell, cmd, resources={'jobs': 1}))
+    fire_and_forget(
+        client.submit(vt.contShell, cmd, resources={'jobs': 1}))
 
+print('\n\nStarting incremental upscaling....')
+incrementalUpscale(
+    client, starting_scale, args.process_per_node, args.max_processes, wait=args.upscale_wait)
 
-while current_scale < args.n_processes:
-    time.sleep(args.wait)
-    current_scale += int(processes_per_node)
-    cluster.adapt(minimum=0, maximum=current_scale)
-    print(f'  scaling to {current_scale}....')
-
-# wait on completion of futures before closing
-print('waiting for jobs to complete....')
-client.gather(futures, errors='skip')
-print('shutting down....')
+print('\n\nStarting incremental downscaling....')
+incrementalDownscale(
+    client, wait=args.downscale_wait)
 
 # shutdown and exit
 client.shutdown()

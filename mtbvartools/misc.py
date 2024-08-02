@@ -2,7 +2,7 @@ import subprocess, json
 import pandas as pd
 import numpy as np
 
-def contShell(cmd, is_return=False):
+def contShell(cmd, is_return=False, exception_at=None):
     def yieldcmd(cmd):
         popen = subprocess.Popen(
             cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
@@ -14,6 +14,8 @@ def contShell(cmd, is_return=False):
             raise subprocess.CalledProcessError(return_code, cmd)
     if not is_return:
         for line in yieldcmd(cmd):
+            if exception_at is not None and exception_at in line[:-1]:
+                raise ValueError(f'Found "{exception_at}" in output\n {line[:-1]}.')
             print(line[:-1])
     if is_return:
         output = [line for line in yieldcmd(cmd)]
