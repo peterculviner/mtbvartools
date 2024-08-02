@@ -9,6 +9,10 @@ from dask_jobqueue import SLURMCluster
 from dask.distributed import fire_and_forget
 
 
+def getIdle(client):
+    return set([
+        w for w, ws in client.cluster.scheduler.workers.items() if len(ws.processing) == 0])
+
 def incrementalUpscale(client, start_scale, workers_per_tick, maximum_workers, wait=1):
     cluster = client.cluster
     current_scale = start_scale
@@ -23,20 +27,27 @@ def incrementalUpscale(client, start_scale, workers_per_tick, maximum_workers, w
         print(f'Working on {n_tasks} tasks, scaling {n_workers} (current) -> {current_scale} (set).')
         current_scale += workers_per_tick
 
-def incrementalDownscale(client, wait=60):
+def incrementalDownscale(client, wait=60, shutdown=True):
     idle_last_tick = set()
     n_workers = len(client.cluster.scheduler.workers)
     n_tasks = len(client.cluster.scheduler.tasks)
     while n_workers > 0 or n_tasks > 0:
-        idle_this_tick = set(client.cluster.scheduler.idle.keys())
-        to_close = idle_last_tick.intersection(idle_this_tick)
-        client.retire_workers(to_close)
-        idle_last_tick = idle_this_tick
-        # description
-        print(f'Running {len(client.cluster.scheduler.tasks)} tasks on {n_workers} active workers. Closing {len(to_close)} idle workers.')
+        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        if n_tasks >= n_workers:  # work aplenty
+            print(f'{ts} - Running {n_tasks} tasks on {n_workers} active workers.')
+        else:  # start retiring idle workers
+            idle_this_tick = getIdle(client)
+            to_close = idle_last_tick.intersection(idle_this_tick)
+            client.retire_workers(to_close)
+            idle_last_tick = idle_this_tick
+            print(f'{ts} - Running {n_tasks} tasks on {n_workers} active workers. Closing {len(to_close)} idle workers.')
+        # update stats
         time.sleep(wait)
         n_workers = len(client.cluster.scheduler.workers)
         n_tasks = len(client.cluster.scheduler.tasks)
+    print('No workers and no tasks left! Downscale complete.')
+    if shutdown:
+        client.shutdown()
 
 
 # handle arguments
@@ -74,7 +85,7 @@ parser.add_argument(
 parser.add_argument(
     '--downscale-wait', default=30, type=float, help='wait time (s) between downscale ticks (default: 30s)')
 parser.add_argument(
-    '--initial-nodes', default=25, type=int, help='maximum number of nodes to request to start')
+    '--initial-nodes', default=50, type=int, help='maximum number of nodes to request to start.')
 args = parser.parse_args()
 
 # prepare outfile directory
@@ -138,6 +149,9 @@ for i, (label, row) in enumerate(process_df.iterrows()):
     fire_and_forget(
         client.submit(vt.contShell, cmd, resources={'jobs': 1}))
 
+# let the scheduler get its bearings on tasks    
+time.sleep(10)
+
 print('\n\nStarting incremental upscaling....')
 incrementalUpscale(
     client, starting_scale, args.process_per_node, args.max_processes, wait=args.upscale_wait)
@@ -146,6 +160,4 @@ print('\n\nStarting incremental downscaling....')
 incrementalDownscale(
     client, wait=args.downscale_wait)
 
-# shutdown and exit
-client.shutdown()
 sys.exit(0)
