@@ -103,7 +103,7 @@ cluster = SLURMCluster(
         'dashboard_address': args.dashboard_address})
 
 # start an initial maximum of 25 nodes, this is few enough to not upset the SLURM scheduler
-starting_scale = min(args.n_processes, int(args.initial_nodes) * int(args.process_per_node))
+starting_scale = min(args.max_processes, int(args.initial_nodes) * int(args.process_per_node))
 cluster.scale(starting_scale)  # scale refers to the number of processes to launch
 print(f'Starting with scale of {starting_scale} processes....') 
 client = cluster.get_client()
