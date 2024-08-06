@@ -10,8 +10,8 @@ parser = argparse.ArgumentParser(
     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
 parser.add_argument(
-    '-i', '--sra', type=str, required=True, action='extend', nargs='+', 
-    help='accession number from short read archive, argument can be added more than once')
+    '-i', '--sra', type=str, required=True, 
+    help='accession number from short read archive comma separated SRA accessions will be concatenated')
 parser.add_argument(
     '-o', '--output', type=str, required=True, help='output file handle')
 parser.add_argument(
@@ -38,7 +38,7 @@ if not args.overwrite and os.path.exists(f'{base_dir}/{args.output}.results.csv'
 data_inputs = []
 iidx = 0
 try:
-    for sra_input in args.sra:
+    for sra_input in args.sra.split(','):
         data_inputs.append([sra_input, f'_{iidx}'])
         iidx += 1
 except TypeError:

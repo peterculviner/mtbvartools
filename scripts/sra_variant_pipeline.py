@@ -15,6 +15,11 @@ def mergeResults(current_df, target_path):
         print(f'Results file: "{target_path}" does not exist.')
         sys.exit(1)
 
+def errorExit(args, results_df):
+    results_df.loc[args.output, 'exit_type'] = 'ERROR'
+    results_df.to_csv(f'{args.dir}/{args.output}/results/{args.output}.results.csv')
+    vt.contShell(f'touch {args.dir}/{args.output}/results/{args.output}.error')
+
 
 def politeExit(args, results_df, exit_type):
     results_df.loc[args.output, 'exit_type'] = exit_type
@@ -95,136 +100,142 @@ results_df = pd.DataFrame(index=[args.output])
 # start global timer
 global_start = timeit.default_timer()
 
-
-#### PRE-SCRIPT CALCULATIONS ####
-# common args
-common_args = f'-o {args.output} -d {args.dir}'
-if args.overwrite:
-    common_args += ' --overwrite'
-# fasta reference length
-ref_len = pysam.FastaFile(
-    args.fasta).lengths[0]
-####
-
-
-#### SRA DOWNLOAD ####
-start = timeit.default_timer()
-cmd = f'\
-    pipeline_steps/sra_download.py \
-    --sra {args.sra} {common_args}'
-vt.contShell(cmd)
-results_df = mergeResults(  # get results
-    results_df, f'{args.dir}/{args.output}/sra_download/{args.output}.results.csv')
-## move key files
-## decide to proceed or stop
-print(f'COMPLETE sra_download.py in {round(timeit.default_timer() - start)} seconds.\n\n')
-####
+try:  # global error handling
+    #### PRE-SCRIPT CALCULATIONS ####
+    # common args
+    common_args = f'-o {args.output} -d {args.dir}'
+    if args.overwrite:
+        common_args += ' --overwrite'
+    # fasta reference length
+    ref_len = pysam.FastaFile(
+        args.fasta).lengths[0]
+    ####
 
 
-#### DOWNSAMPLE FASTQ ####
-start = timeit.default_timer()
-cmd = f'\
-    pipeline_steps/downsample_fastq.py \
-    --in-fastq {args.dir}/{args.output}/sra_download/{args.output} \
-    --reference-length {ref_len} --target-depth {args.target_depth} \
-    {common_args}'
-vt.contShell(cmd)
-results_df = mergeResults(  # get results
-    results_df, f'{args.dir}/{args.output}/downsample_fastq/{args.output}.results.csv')
-## move key files
-## decide to proceed or stop
-print(f'COMPLETE downsample_fastq.py in {round(timeit.default_timer() - start)} seconds.\n\n')
-####
+    #### SRA DOWNLOAD ####
+    start = timeit.default_timer()
+    cmd = f'\
+        sra_download.py \
+        --sra {args.sra} {common_args}'
+    vt.contShell(cmd)
+    results_df = mergeResults(  # get results
+        results_df, f'{args.dir}/{args.output}/sra_download/{args.output}.results.csv')
+    ## move key files
+    ## decide to proceed or stop
+    print(f'COMPLETE sra_download.py in {round(timeit.default_timer() - start)} seconds.\n\n')
+    ####
 
 
-#### BWA MAP & STATS ####
-start = timeit.default_timer()
-cmd = f'\
-    pipeline_steps/bwa_map.py \
-    --in-fastq {args.dir}/{args.output}/downsample_fastq/{args.output} \
-    --fasta {args.fasta} \
-    --threads {args.threads} {common_args}'
-vt.contShell(cmd)
-results_df = mergeResults(  # get results
-    results_df, f'{args.dir}/{args.output}/bwa_map/{args.output}.results.csv')
-## move key files
-[copy2(file, f'{args.dir}/{args.output}/results') for file in [
-    f'{args.dir}/{args.output}/bwa_map/{args.output}.bam.coverage',
-    f'{args.dir}/{args.output}/bwa_map/{args.output}.bam.stats',
-    ]]
-## check stopping conditions
-if results_df.loc[args.output, 'meandepth'] < args.min_depth:
-    print('Failed minimum mean depth cutoff.')
-    politeExit(args, results_df, 'fail_depth')
-if results_df.loc[args.output, 'mapping_rate'] < args.min_aligned:
-    print('Failed minimum mapping rate cutoff.')
-    politeExit(args, results_df, 'fail_mapping_rate')
-print(f'COMPLETE bwa_map.py in {round(timeit.default_timer() - start)} seconds.\n\n')
-####
+    #### DOWNSAMPLE FASTQ ####
+    start = timeit.default_timer()
+    cmd = f'\
+        downsample_fastq.py \
+        --in-fastq {args.dir}/{args.output}/sra_download/{args.output} \
+        --reference-length {ref_len} --target-depth {args.target_depth} \
+        {common_args}'
+    vt.contShell(cmd)
+    results_df = mergeResults(  # get results
+        results_df, f'{args.dir}/{args.output}/downsample_fastq/{args.output}.results.csv')
+    ## move key files
+    ## decide to proceed or stop
+    print(f'COMPLETE downsample_fastq.py in {round(timeit.default_timer() - start)} seconds.\n\n')
+    ####
 
 
-#### TBPROFILER ####
-start = timeit.default_timer()
-cmd = f'\
-    pipeline_steps/tb_profiler.py \
-    --in-bam {args.dir}/{args.output}/bwa_map/{args.output}.bam \
-    --lineage-snp-threshold {args.lineage_snp_threshold} \
-    --lineage-snp-count {args.lineage_snp_count} \
-    --threads {args.threads} {common_args}'
-vt.contShell(cmd)
-results_df = mergeResults(  # get results
-    results_df, f'{args.dir}/{args.output}/tb_profiler/{args.output}.results.csv')
-## move key files
-[copy2(file, f'{args.dir}/{args.output}/results') for file in [
-    f'{args.dir}/{args.output}/tb_profiler/{args.output}.tbprofiler.json',
-    ]]
-## check stopping conditions
-if results_df.loc[args.output, 'call'] not in args.allowed_lineages.split(','):
-    print('Failed to find lineage call in allowed lineages.')
-    politeExit(args, results_df, 'fail_lineage')
-print(f'COMPLETE tb_profiler.py in {round(timeit.default_timer() - start)} seconds.\n\n')
-####
+    #### BWA MAP & STATS ####
+    start = timeit.default_timer()
+    cmd = f'\
+        bwa_map.py \
+        --in-fastq {args.dir}/{args.output}/downsample_fastq/{args.output} \
+        --fasta {args.fasta} \
+        --threads {args.threads} {common_args}'
+    vt.contShell(cmd)
+    results_df = mergeResults(  # get results
+        results_df, f'{args.dir}/{args.output}/bwa_map/{args.output}.results.csv')
+    ## move key files
+    [copy2(file, f'{args.dir}/{args.output}/results') for file in [
+        f'{args.dir}/{args.output}/bwa_map/{args.output}.bam.coverage',
+        f'{args.dir}/{args.output}/bwa_map/{args.output}.bam.stats',
+        ]]
+    ## check stopping conditions
+    if results_df.loc[args.output, 'meandepth'] < args.min_depth:
+        print('Failed minimum mean depth cutoff.')
+        politeExit(args, results_df, 'fail_depth')
+    if results_df.loc[args.output, 'mapping_rate'] < args.min_aligned:
+        print('Failed minimum mapping rate cutoff.')
+        politeExit(args, results_df, 'fail_mapping_rate')
+    print(f'COMPLETE bwa_map.py in {round(timeit.default_timer() - start)} seconds.\n\n')
+    ####
 
 
-#### MUTECT2 ####
-start = timeit.default_timer()
-cmd = f'\
-    pipeline_steps/mutect2.py \
-    --in-bam {args.dir}/{args.output}/bwa_map/{args.output}.bam \
-    -r {args.fasta} \
-    --memory {args.memory} --threads {args.threads} {common_args}'
-vt.contShell(cmd)
-results_df = mergeResults(  # get results
-    results_df, f'{args.dir}/{args.output}/mutect2/{args.output}.results.csv')
-## move key files
-[copy2(file, f'{args.dir}/{args.output}/results') for file in [
-    f'{args.dir}/{args.output}/mutect2/{args.output}.mutect2.pass.vcf',
-    f'{args.dir}/{args.output}/mutect2/{args.output}.mutect2.fail.vcf',
-    ]]
-## check stopping conditions
-
-print(f'COMPLETE mutect2.py in {round(timeit.default_timer() - start)} seconds.\n\n')
-####
-
-
-#### BRESEQ CONSENSUS ####
-start = timeit.default_timer()
-cmd = f'\
-    pipeline_steps/breseq_consensus.py \
-    --in-fastq {args.dir}/{args.output}/downsample_fastq/{args.output} \
-    --genbank {args.genbank} \
-    --threads {args.threads} {common_args}'
-vt.contShell(cmd)
-results_df = mergeResults(  # get results
-    results_df, f'{args.dir}/{args.output}/breseq_consensus/{args.output}.results.csv')
-## move key files
-[copy2(file, f'{args.dir}/{args.output}/results') for file in [
-    f'{args.dir}/{args.output}/breseq_consensus/{args.output}.breseq.vcf',
-    ]]
-## check stopping conditions
-print(f'COMPLETE breseq_consensus.py in {round(timeit.default_timer() - start)} seconds.\n\n')
-####
+    #### TBPROFILER ####
+    start = timeit.default_timer()
+    cmd = f'\
+        tb_profiler.py \
+        --in-bam {args.dir}/{args.output}/bwa_map/{args.output}.bam \
+        --lineage-snp-threshold {args.lineage_snp_threshold} \
+        --lineage-snp-count {args.lineage_snp_count} \
+        --threads {args.threads} {common_args}'
+    vt.contShell(cmd)
+    results_df = mergeResults(  # get results
+        results_df, f'{args.dir}/{args.output}/tb_profiler/{args.output}.results.csv')
+    ## move key files
+    [copy2(file, f'{args.dir}/{args.output}/results') for file in [
+        f'{args.dir}/{args.output}/tb_profiler/{args.output}.tbprofiler.json',
+        ]]
+    ## check stopping conditions
+    if results_df.loc[args.output, 'call'] not in args.allowed_lineages.split(','):
+        print('Failed to find lineage call in allowed lineages.')
+        politeExit(args, results_df, 'fail_lineage')
+    print(f'COMPLETE tb_profiler.py in {round(timeit.default_timer() - start)} seconds.\n\n')
+    ####
 
 
-print(f'COMPLETE SCRIPT in {round(timeit.default_timer() - global_start)} seconds / {round((timeit.default_timer() - global_start)/60)} minutes.')
-politeExit(args, results_df, 'complete')
+    #### MUTECT2 ####
+    start = timeit.default_timer()
+    cmd = f'\
+        mutect2.py \
+        --in-bam {args.dir}/{args.output}/bwa_map/{args.output}.bam \
+        -r {args.fasta} \
+        --memory {args.memory} --threads {args.threads} {common_args}'
+    vt.contShell(cmd)
+    results_df = mergeResults(  # get results
+        results_df, f'{args.dir}/{args.output}/mutect2/{args.output}.results.csv')
+    ## move key files
+    [copy2(file, f'{args.dir}/{args.output}/results') for file in [
+        f'{args.dir}/{args.output}/mutect2/{args.output}.mutect2.pass.vcf',
+        f'{args.dir}/{args.output}/mutect2/{args.output}.mutect2.fail.vcf',
+        ]]
+    ## check stopping conditions
+
+    print(f'COMPLETE mutect2.py in {round(timeit.default_timer() - start)} seconds.\n\n')
+    ####
+
+
+    #### BRESEQ CONSENSUS ####
+    start = timeit.default_timer()
+    cmd = f'\
+        breseq_consensus.py \
+        --in-fastq {args.dir}/{args.output}/downsample_fastq/{args.output} \
+        --genbank {args.genbank} \
+        --threads {args.threads} {common_args}'
+    vt.contShell(cmd)
+    results_df = mergeResults(  # get results
+        results_df, f'{args.dir}/{args.output}/breseq_consensus/{args.output}.results.csv')
+    ## move key files
+    [copy2(file, f'{args.dir}/{args.output}/results') for file in [
+        f'{args.dir}/{args.output}/breseq_consensus/{args.output}.breseq.vcf',
+        ]]
+    ## check stopping conditions
+    print(f'COMPLETE breseq_consensus.py in {round(timeit.default_timer() - start)} seconds.\n\n')
+    ####
+
+
+    print(f'COMPLETE SCRIPT in {round(timeit.default_timer() - global_start)} seconds / {round((timeit.default_timer() - global_start)/60)} minutes.')
+    politeExit(args, results_df, 'complete')
+
+except Exception as original_exception:
+    print('but why')
+    print(f'ERROR in {round(timeit.default_timer() - global_start)} seconds / {round((timeit.default_timer() - global_start)/60)} minutes.')
+    errorExit(args, results_df)
+    raise original_exception
