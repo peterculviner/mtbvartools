@@ -78,7 +78,7 @@ parser.add_argument(
 parser.add_argument(
     '--overwrite', action='store_true', help='ignore result files and overwrite')
 
-args = parser.parse_args()
+args, _ = parser.parse_known_args()
 
 # check if paired end / single end / undetermined
 fin_path = f'{args.in_fastq}.fastq'

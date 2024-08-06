@@ -17,12 +17,24 @@ parser.add_argument(
 parser.add_argument(
     '-d', '--dir', type=str, default='.', help='output directory path')
 parser.add_argument(
+    '--use-tmp', action='store_true', help='use tmp storage folder (via symbolic links) for working computation')
+parser.add_argument(
+    '--tmp-path', type=str, default='/tmp/')
+parser.add_argument(
     '--overwrite', action='store_true', help='ignore result files and overwrite')
 
-args = parser.parse_args()
+args, _ = parser.parse_known_args()
 
-base_dir = f'{args.dir}/{args.output}/sra_download/'
-os.makedirs(base_dir, exist_ok=True)
+if args.use_tmp:
+    base_dir = f'{args.tmp_path}/{args.output}/sra_download'
+    os.makedirs(base_dir, exist_ok=True)
+    try:
+        os.symlink(base_dir, f'{args.dir}/{args.output}/sra_download', target_is_directory=True)
+    except FileExistsError:
+        pass  # assume that the symlink exists from a previous run
+else:
+    base_dir = f'{args.dir}/{args.output}/sra_download'
+    os.makedirs(base_dir, exist_ok=True)
 
 sra_dir = f'{base_dir}/sra/'
 os.makedirs(sra_dir, exist_ok=True)

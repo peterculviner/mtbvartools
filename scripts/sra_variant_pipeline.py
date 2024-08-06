@@ -15,14 +15,28 @@ def mergeResults(current_df, target_path):
         print(f'Results file: "{target_path}" does not exist.')
         sys.exit(1)
 
+
+def cleartmp(target_directory):
+    for path in os.listdir(target_directory):
+        full_path = f'{target_directory}/{path}'
+        if os.path.islink(full_path):  # get links
+            print(f'removing & unlinking tmp storage at {full_path}')
+            rmtree(os.path.realpath(full_path))
+            os.unlink(full_path)
+
+
 def errorExit(args, results_df):
+    cleartmp(  # clear temporary directories (if any)
+        f'{args.dir}/{args.output}')
     results_df.loc[args.output, 'exit_type'] = 'ERROR'
-    results_df.to_csv(f'{args.dir}/{args.output}/results/{args.output}.results.csv')
+    results_df.to_csv(f'{args.dir}/{args.output}/results/{args.output}.error.results.csv')
     vt.contShell(f'touch {args.dir}/{args.output}/results/{args.output}.error')
 
 
 def politeExit(args, results_df, exit_type):
     results_df.loc[args.output, 'exit_type'] = exit_type
+    cleartmp(  # clear temporary directories (if any)
+        f'{args.dir}/{args.output}')
     if args.keep_intermediates is False:
         for name in os.listdir(f'{args.dir}/{args.output}'):
             if name != 'results':
@@ -58,6 +72,10 @@ parser.add_argument(
     '-m', '--memory', type=str, default='6000m', help='amount of memory to allocate.')
 parser.add_argument(
     '--overwrite', action='store_true', help='ignore result files and overwrite')
+parser.add_argument(
+    '--use-tmp', action='store_true', help='use tmp storage folder (via symbolic links) for working computation')
+parser.add_argument(
+    '--tmp-path', type=str, default='/tmp/')
 parser.add_argument(
     '--keep-intermediates', action='store_true', help='keep step intermediates')
 
@@ -106,6 +124,8 @@ try:  # global error handling
     common_args = f'-o {args.output} -d {args.dir}'
     if args.overwrite:
         common_args += ' --overwrite'
+    if args.use_tmp:
+        common_args += f' --use-tmp --tmp-path {args.tmp_path}'
     # fasta reference length
     ref_len = pysam.FastaFile(
         args.fasta).lengths[0]
@@ -134,11 +154,11 @@ try:  # global error handling
         --reference-length {ref_len} --target-depth {args.target_depth} \
         {common_args}'
     vt.contShell(cmd)
+    print(f'COMPLETE downsample_fastq.py in {round(timeit.default_timer() - start)} seconds.\n\n')
     results_df = mergeResults(  # get results
         results_df, f'{args.dir}/{args.output}/downsample_fastq/{args.output}.results.csv')
     ## move key files
     ## decide to proceed or stop
-    print(f'COMPLETE downsample_fastq.py in {round(timeit.default_timer() - start)} seconds.\n\n')
     ####
 
 
@@ -150,6 +170,7 @@ try:  # global error handling
         --fasta {args.fasta} \
         --threads {args.threads} {common_args}'
     vt.contShell(cmd)
+    print(f'COMPLETE bwa_map.py in {round(timeit.default_timer() - start)} seconds.\n\n')
     results_df = mergeResults(  # get results
         results_df, f'{args.dir}/{args.output}/bwa_map/{args.output}.results.csv')
     ## move key files
@@ -164,7 +185,6 @@ try:  # global error handling
     if results_df.loc[args.output, 'mapping_rate'] < args.min_aligned:
         print('Failed minimum mapping rate cutoff.')
         politeExit(args, results_df, 'fail_mapping_rate')
-    print(f'COMPLETE bwa_map.py in {round(timeit.default_timer() - start)} seconds.\n\n')
     ####
 
 
@@ -179,15 +199,15 @@ try:  # global error handling
     vt.contShell(cmd)
     results_df = mergeResults(  # get results
         results_df, f'{args.dir}/{args.output}/tb_profiler/{args.output}.results.csv')
+    print(f'COMPLETE tb_profiler.py in {round(timeit.default_timer() - start)} seconds.\n\n')
     ## move key files
     [copy2(file, f'{args.dir}/{args.output}/results') for file in [
         f'{args.dir}/{args.output}/tb_profiler/{args.output}.tbprofiler.json',
         ]]
     ## check stopping conditions
-    if results_df.loc[args.output, 'call'] not in args.allowed_lineages.split(','):
+    if args.allowed_lineages != 'any' and results_df.loc[args.output, 'call'] not in args.allowed_lineages.split(','):
         print('Failed to find lineage call in allowed lineages.')
         politeExit(args, results_df, 'fail_lineage')
-    print(f'COMPLETE tb_profiler.py in {round(timeit.default_timer() - start)} seconds.\n\n')
     ####
 
 
@@ -199,6 +219,7 @@ try:  # global error handling
         -r {args.fasta} \
         --memory {args.memory} --threads {args.threads} {common_args}'
     vt.contShell(cmd)
+    print(f'COMPLETE mutect2.py in {round(timeit.default_timer() - start)} seconds.\n\n')
     results_df = mergeResults(  # get results
         results_df, f'{args.dir}/{args.output}/mutect2/{args.output}.results.csv')
     ## move key files
@@ -207,8 +228,6 @@ try:  # global error handling
         f'{args.dir}/{args.output}/mutect2/{args.output}.mutect2.fail.vcf',
         ]]
     ## check stopping conditions
-
-    print(f'COMPLETE mutect2.py in {round(timeit.default_timer() - start)} seconds.\n\n')
     ####
 
 
@@ -220,6 +239,7 @@ try:  # global error handling
         --genbank {args.genbank} \
         --threads {args.threads} {common_args}'
     vt.contShell(cmd)
+    print(f'COMPLETE breseq_consensus.py in {round(timeit.default_timer() - start)} seconds.\n\n')
     results_df = mergeResults(  # get results
         results_df, f'{args.dir}/{args.output}/breseq_consensus/{args.output}.results.csv')
     ## move key files
@@ -227,7 +247,6 @@ try:  # global error handling
         f'{args.dir}/{args.output}/breseq_consensus/{args.output}.breseq.vcf',
         ]]
     ## check stopping conditions
-    print(f'COMPLETE breseq_consensus.py in {round(timeit.default_timer() - start)} seconds.\n\n')
     ####
 
 
@@ -235,7 +254,6 @@ try:  # global error handling
     politeExit(args, results_df, 'complete')
 
 except Exception as original_exception:
-    print('but why')
     print(f'ERROR in {round(timeit.default_timer() - global_start)} seconds / {round((timeit.default_timer() - global_start)/60)} minutes.')
     errorExit(args, results_df)
     raise original_exception

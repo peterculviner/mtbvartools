@@ -32,9 +32,13 @@ parser.add_argument(
 parser.add_argument(
     '-t', '--threads', type=int, default=1, help='number of threads to use')
 parser.add_argument(
+    '--use-tmp', action='store_true', help='use tmp storage folder (via symbolic links) for working computation')
+parser.add_argument(
+    '--tmp-path', type=str, default='/tmp/')
+parser.add_argument(
     '--overwrite', action='store_true', help='ignore result files and overwrite')
 
-args = parser.parse_args()
+args, _ = parser.parse_known_args()
 
 # check if paired end / single end / undetermined
 fin_path = f'{args.in_fastq}.fastq'
@@ -47,8 +51,16 @@ elif os.path.exists(fin_path):
 else:
     raise ValueError('No fastqs matching expected PE or SE patterns.\n' + '\n'.join([fin_path, 'or...', fin_path1, fin_path2]))
 
-base_dir = f'{args.dir}/{args.output}/fastp_trimming/'
-os.makedirs(base_dir, exist_ok=True)
+if args.use_tmp:
+    base_dir = f'{args.tmp_path}/{args.output}/fastp_trimming'
+    os.makedirs(base_dir, exist_ok=True)
+    try:
+        os.symlink(base_dir, f'{args.dir}/{args.output}/fastp_trimming', target_is_directory=True)
+    except FileExistsError:
+        pass  # assume that the symlink exists from a previous run
+else:
+    base_dir = f'{args.dir}/{args.output}/fastp_trimming'
+    os.makedirs(base_dir, exist_ok=True)
 
 if not args.overwrite and os.path.exists(f'{base_dir}/{args.output}.results.csv'):
     print(f'{base_dir}/{args.output}.results.csv found, exiting....')

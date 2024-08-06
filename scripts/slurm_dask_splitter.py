@@ -85,6 +85,8 @@ parser.add_argument(
 parser.add_argument(
     '--downscale-wait', default=30, type=float, help='wait time (s) between downscale ticks (default: 30s)')
 parser.add_argument(
+    '--report-tick', default=60, type=float, help='wait time (s) between reports')
+parser.add_argument(
     '--initial-nodes', default=50, type=int, help='maximum number of nodes to request to start.')
 args = parser.parse_args()
 
@@ -150,14 +152,18 @@ for i, (label, row) in enumerate(process_df.iterrows()):
         client.submit(vt.contShell, cmd, resources={'jobs': 1}))
 
 # let the scheduler get its bearings on tasks    
-time.sleep(10)
+time.sleep(60)
 
 print('\n\nStarting incremental upscaling....')
 incrementalUpscale(
-    client, starting_scale, args.process_per_node, args.max_processes, wait=args.upscale_wait)
+    client, starting_scale, args.process_per_node, args.max_processes,
+    wait=args.upscale_wait, report_tick=args.report_tick)
+
+# let the scheduler get its bearings on tasks    
+time.sleep(60)
 
 print('\n\nStarting incremental downscaling....')
 incrementalDownscale(
-    client, wait=args.downscale_wait)
+    client, wait=args.downscale_wait, report_tick=args.report_tick)
 
 sys.exit(0)
