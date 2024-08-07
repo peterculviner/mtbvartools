@@ -1,6 +1,7 @@
-import subprocess, json
+import subprocess, json, timeit
 import pandas as pd
 import numpy as np
+from datetime import datetime, timedelta
 
 def contShell(cmd, is_return=False, exception_at=None):
     def yieldcmd(cmd):
@@ -52,3 +53,39 @@ def getJSONValues(filename, keys_list):
             {label: np.nan for label, keys in keys_list})
     return pd.Series(
         {label: chainLookup(keys, loaded_json) for label, keys in keys_list})
+
+class StopWatch():
+    def start(self, name, file=None):
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        start = timeit.default_timer()
+        self.timestamps[name] = {'start': now, 'tstart': start}
+        out_str = f'{now} - START {name}'
+        print(out_str)
+        if file is not None:
+            with open(file, 'a') as f:
+                f.write(out_str + '\n')
+         
+    def end(self, name, file=None, notes=None):
+        if name not in self.timestamps.keys():
+            raise KeyError(f'{name} not found in tracked timestamps.')
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        end = timeit.default_timer()
+        record = self.timestamps[name]
+        record['end'] = now
+        record['tend'] = end
+        record['selapsed'] = round(timeit.default_timer() - record['tstart'])
+        record['elapsed'] = str(timedelta(seconds=record['selapsed']))
+        out_str = f'{now} - END {name} elapsed {record["selapsed"]} ({record["elapsed"]})'
+        if notes is not None:
+            record['notes'] = notes
+            out_str += f' NOTE: {notes}'
+        print('\n' + out_str + '\n')
+        if file is not None:
+            with open(file, 'a') as f:
+                f.write(out_str + '\n')
+
+    def report(self, file):
+        pd.DataFrame(data=self.timestamps).T.to_csv(file)
+        
+    def __init__(self):
+        self.timestamps = {}

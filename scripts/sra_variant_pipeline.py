@@ -1,10 +1,10 @@
 #!/usr/bin/env -S python -u
 
-import argparse, os, sys, timeit
+import argparse, os, sys, pysam
 import pandas as pd
 import mtbvartools as vt
-import pysam
-from shutil import copy2, rmtree
+from mtbvartools.misc import StopWatch
+from shutil import copy2, rmtree, copytree
 
 def mergeResults(current_df, target_path):
     if os.path.exists(target_path):
@@ -29,12 +29,16 @@ def errorExit(args, results_df):
     cleartmp(  # clear temporary directories (if any)
         f'{args.dir}/{args.output}')
     results_df.loc[args.output, 'exit_type'] = 'ERROR'
+    sw.end('pipeline', f'{results_dir}/times.txt', 'ERROR')
+    sw.report(f'{results_dir}/times.csv')
     results_df.to_csv(f'{args.dir}/{args.output}/results/{args.output}.error.results.csv')
     vt.contShell(f'touch {args.dir}/{args.output}/results/{args.output}.error')
 
 
 def politeExit(args, results_df, exit_type):
     results_df.loc[args.output, 'exit_type'] = exit_type
+    sw.end('pipeline', f'{results_dir}/times.txt', exit_type)
+    sw.report(f'{results_dir}/times.csv')
     cleartmp(  # clear temporary directories (if any)
         f'{args.dir}/{args.output}')
     if args.keep_intermediates is False:
@@ -116,7 +120,8 @@ if not args.overwrite and os.path.exists(f'{results_dir}/{args.output}.results.c
 results_df = pd.DataFrame(index=[args.output])
 
 # start global timer
-global_start = timeit.default_timer()
+sw = StopWatch()
+sw.start('pipeline', f'{results_dir}/times.txt')
 
 try:  # global error handling
     #### PRE-SCRIPT CALCULATIONS ####
@@ -133,28 +138,28 @@ try:  # global error handling
 
 
     #### SRA DOWNLOAD ####
-    start = timeit.default_timer()
+    sw.start('sra_download.py', f'{results_dir}/times.txt')
     cmd = f'\
         sra_download.py \
         --sra {args.sra} {common_args}'
     vt.contShell(cmd)
+    sw.end('sra_download.py', f'{results_dir}/times.txt')
     results_df = mergeResults(  # get results
         results_df, f'{args.dir}/{args.output}/sra_download/{args.output}.results.csv')
     ## move key files
     ## decide to proceed or stop
-    print(f'COMPLETE sra_download.py in {round(timeit.default_timer() - start)} seconds.\n\n')
     ####
 
 
     #### DOWNSAMPLE FASTQ ####
-    start = timeit.default_timer()
+    sw.start('downsample_fastq.py', f'{results_dir}/times.txt')
     cmd = f'\
         downsample_fastq.py \
         --in-fastq {args.dir}/{args.output}/sra_download/{args.output} \
         --reference-length {ref_len} --target-depth {args.target_depth} \
         {common_args}'
     vt.contShell(cmd)
-    print(f'COMPLETE downsample_fastq.py in {round(timeit.default_timer() - start)} seconds.\n\n')
+    sw.end('downsample_fastq.py', f'{results_dir}/times.txt')
     results_df = mergeResults(  # get results
         results_df, f'{args.dir}/{args.output}/downsample_fastq/{args.output}.results.csv')
     ## move key files
@@ -162,15 +167,33 @@ try:  # global error handling
     ####
 
 
+    #### RUN FASTP ####
+    sw.start('fastp_trimming.py', f'{results_dir}/times.txt')
+    cmd = f'\
+        fastp_trimming.py \
+        --in-fastq {args.dir}/{args.output}/downsample_fastq/{args.output} \
+        {common_args}'
+    vt.contShell(cmd)
+    sw.end('fastp_trimming.py', f'{results_dir}/times.txt')
+    results_df = mergeResults(  # get results
+        results_df, f'{args.dir}/{args.output}/fastp_trimming/{args.output}.results.csv')
+    ## move key files
+    [copy2(file, f'{args.dir}/{args.output}/results') for file in [
+        f'{args.dir}/{args.output}/fastp_trimming/fastp.json',
+        ]]
+    ## decide to proceed or stop
+    ####
+
+
     #### BWA MAP & STATS ####
-    start = timeit.default_timer()
+    sw.start('bwa_map.py', f'{results_dir}/times.txt')
     cmd = f'\
         bwa_map.py \
-        --in-fastq {args.dir}/{args.output}/downsample_fastq/{args.output} \
+        --in-fastq {args.dir}/{args.output}/fastp_trimming/{args.output} \
         --fasta {args.fasta} \
         --threads {args.threads} {common_args}'
     vt.contShell(cmd)
-    print(f'COMPLETE bwa_map.py in {round(timeit.default_timer() - start)} seconds.\n\n')
+    sw.end('bwa_map.py', f'{results_dir}/times.txt')
     results_df = mergeResults(  # get results
         results_df, f'{args.dir}/{args.output}/bwa_map/{args.output}.results.csv')
     ## move key files
@@ -189,7 +212,7 @@ try:  # global error handling
 
 
     #### TBPROFILER ####
-    start = timeit.default_timer()
+    sw.start('tb_profiler.py', f'{results_dir}/times.txt')
     cmd = f'\
         tb_profiler.py \
         --in-bam {args.dir}/{args.output}/bwa_map/{args.output}.bam \
@@ -197,9 +220,9 @@ try:  # global error handling
         --lineage-snp-count {args.lineage_snp_count} \
         --threads {args.threads} {common_args}'
     vt.contShell(cmd)
+    sw.end('tb_profiler.py', f'{results_dir}/times.txt')
     results_df = mergeResults(  # get results
         results_df, f'{args.dir}/{args.output}/tb_profiler/{args.output}.results.csv')
-    print(f'COMPLETE tb_profiler.py in {round(timeit.default_timer() - start)} seconds.\n\n')
     ## move key files
     [copy2(file, f'{args.dir}/{args.output}/results') for file in [
         f'{args.dir}/{args.output}/tb_profiler/{args.output}.tbprofiler.json',
@@ -212,14 +235,14 @@ try:  # global error handling
 
 
     #### MUTECT2 ####
-    start = timeit.default_timer()
+    sw.start('mutect2.py', f'{results_dir}/times.txt')
     cmd = f'\
         mutect2.py \
         --in-bam {args.dir}/{args.output}/bwa_map/{args.output}.bam \
         -r {args.fasta} \
         --memory {args.memory} --threads {args.threads} {common_args}'
     vt.contShell(cmd)
-    print(f'COMPLETE mutect2.py in {round(timeit.default_timer() - start)} seconds.\n\n')
+    sw.end('mutect2.py', f'{results_dir}/times.txt')
     results_df = mergeResults(  # get results
         results_df, f'{args.dir}/{args.output}/mutect2/{args.output}.results.csv')
     ## move key files
@@ -232,28 +255,29 @@ try:  # global error handling
 
 
     #### BRESEQ CONSENSUS ####
-    start = timeit.default_timer()
+    sw.start('breseq_consensus.py', f'{results_dir}/times.txt')
     cmd = f'\
         breseq_consensus.py \
-        --in-fastq {args.dir}/{args.output}/downsample_fastq/{args.output} \
+        --in-fastq {args.dir}/{args.output}/fastp_trimming/{args.output} \
         --genbank {args.genbank} \
         --threads {args.threads} {common_args}'
     vt.contShell(cmd)
-    print(f'COMPLETE breseq_consensus.py in {round(timeit.default_timer() - start)} seconds.\n\n')
+    sw.end('breseq_consensus.py', f'{results_dir}/times.txt')
     results_df = mergeResults(  # get results
         results_df, f'{args.dir}/{args.output}/breseq_consensus/{args.output}.results.csv')
     ## move key files
     [copy2(file, f'{args.dir}/{args.output}/results') for file in [
         f'{args.dir}/{args.output}/breseq_consensus/{args.output}.breseq.vcf',
         ]]
+    copytree(
+        f'{args.dir}/{args.output}/breseq_consensus/{args.output}.miss.breseq.zarr',
+        f'{args.dir}/{args.output}/results/{args.output}.miss.breseq.zarr',
+        dirs_exist_ok=True)
     ## check stopping conditions
     ####
 
-
-    print(f'COMPLETE SCRIPT in {round(timeit.default_timer() - global_start)} seconds / {round((timeit.default_timer() - global_start)/60)} minutes.')
     politeExit(args, results_df, 'complete')
 
 except Exception as original_exception:
-    print(f'ERROR in {round(timeit.default_timer() - global_start)} seconds / {round((timeit.default_timer() - global_start)/60)} minutes.')
     errorExit(args, results_df)
     raise original_exception

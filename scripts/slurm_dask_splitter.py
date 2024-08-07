@@ -67,6 +67,8 @@ parser.add_argument(
     'argsheet', type=str, 
     help='path to csv containing arguments')
 parser.add_argument(
+    '--log-dir', default='.', type=str, help='location for outfile logging')
+parser.add_argument(
     '--max-processes', default=10, type=int, help='maximum number of processes to start')
 parser.add_argument(
     '--queue', default='sapphire', type=str, help='slurm queue to submit to')
@@ -85,13 +87,11 @@ parser.add_argument(
 parser.add_argument(
     '--downscale-wait', default=30, type=float, help='wait time (s) between downscale ticks (default: 30s)')
 parser.add_argument(
-    '--report-tick', default=60, type=float, help='wait time (s) between reports')
-parser.add_argument(
     '--initial-nodes', default=50, type=int, help='maximum number of nodes to request to start.')
 args = parser.parse_args()
 
 # prepare outfile directory
-outfile_dir = datetime.now().strftime('outfiles_%y%m%d_%Hh%Mm%Ss')
+outfile_dir = f'{args.log_dir}/' + datetime.now().strftime('outfiles_%y%m%d_%Hh%Mm%Ss')
 os.makedirs(outfile_dir)
 os.makedirs(f'{outfile_dir}/jobs')
 os.makedirs(f'{outfile_dir}/workers')
@@ -157,13 +157,13 @@ time.sleep(60)
 print('\n\nStarting incremental upscaling....')
 incrementalUpscale(
     client, starting_scale, args.process_per_node, args.max_processes,
-    wait=args.upscale_wait, report_tick=args.report_tick)
+    wait=args.upscale_wait)
 
 # let the scheduler get its bearings on tasks    
 time.sleep(60)
 
 print('\n\nStarting incremental downscaling....')
 incrementalDownscale(
-    client, wait=args.downscale_wait, report_tick=args.report_tick)
+    client, wait=args.downscale_wait)
 
 sys.exit(0)
