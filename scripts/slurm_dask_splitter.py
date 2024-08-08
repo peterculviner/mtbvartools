@@ -7,6 +7,10 @@ from datetime import datetime
 import mtbvartools as vt
 from dask_jobqueue import SLURMCluster
 from dask.distributed import fire_and_forget
+from dask import config
+
+config.set(  # jobs expensive and text is cheap to send over network
+    {'distributed.scheduler.worker-saturation': 1})
 
 
 def getIdle(client):
