@@ -4,6 +4,7 @@ import argparse, os, sys, pysam
 import mtbvartools as vt
 import numpy as np
 import pandas as pd
+from shutil import rmtree
 
 
 filter_functions = [
@@ -96,9 +97,9 @@ parser.add_argument(
 parser.add_argument(
     '-m', '--memory', type=str, default='6000m', help='amount of memory to allocate.')
 parser.add_argument(
-    '--use-tmp', action='store_true', help='use tmp storage folder (via symbolic links) for working computation')
-parser.add_argument(
     '--tmp-path', type=str, default='/tmp/')
+parser.add_argument(
+    '--keep-tmp', action='store_true', help='keep step temporary files')
 parser.add_argument(
     '--overwrite', action='store_true', help='ignore result files and overwrite')
 
@@ -108,16 +109,10 @@ args, _ = parser.parse_known_args()
 if not os.path.exists(args.in_bam):
     raise ValueError(f'BAM file {args.in_bam} not found.')
 
-if args.use_tmp:
-    base_dir = f'{args.tmp_path}/{args.output}/mutect2'
-    os.makedirs(base_dir, exist_ok=True)
-    try:
-        os.symlink(base_dir, f'{args.dir}/{args.output}/mutect2', target_is_directory=True)
-    except FileExistsError:
-        pass  # assume that the symlink exists from a previous run
-else:
-    base_dir = f'{args.dir}/{args.output}/mutect2'
-    os.makedirs(base_dir, exist_ok=True)
+tmp_dir = f'{args.tmp_path}/mutect2'
+os.makedirs(tmp_dir, exist_ok=True)
+base_dir = f'{args.dir}/{args.output}/mutect2'
+os.makedirs(base_dir, exist_ok=True)
 
 if not args.overwrite and os.path.exists(f'{base_dir}/{args.output}.results.csv'):
     print(f'{base_dir}/{args.output}.results.csv found, exiting....')
@@ -130,44 +125,44 @@ cmd = f'export OMP_NUM_THREADS={args.threads} && \
     gatk --java-options "-Xmx{args.memory}" Mutect2 \
     -R {args.reference} \
     -I {args.in_bam} \
-    -O {base_dir}/{args.output}.vcf  \
+    -O {tmp_dir}/{args.output}.vcf  \
     --annotation StrandBiasBySample \
     --read-filter NotSupplementaryAlignmentReadFilter \
     --num-matching-bases-in-dangling-end-to-recover 1 \
     --min-base-quality-score 20 --dont-use-soft-clipped-bases \
-    --bam-output {base_dir}/{args.output}.mt2.bam \
+    --bam-output {tmp_dir}/{args.output}.mt2.bam \
     --min-pruning 2  \
-    --f1r2-tar-gz {base_dir}/{args.output}.f1r2.tar.gz \
+    --f1r2-tar-gz {tmp_dir}/{args.output}.f1r2.tar.gz \
     --af-of-alleles-not-in-resource 0.0004 \
     --max-reads-per-alignment-start 0 \
     2>&1'
 vt.contShell(cmd)  # run GATK mutect2
 
 cmd = f'gatk LearnReadOrientationModel \
-    -I {base_dir}/{args.output}.f1r2.tar.gz \
-    -O {base_dir}/{args.output}.readorientationmodel.tar.gz 2>&1'
+    -I {tmp_dir}/{args.output}.f1r2.tar.gz \
+    -O {tmp_dir}/{args.output}.readorientationmodel.tar.gz 2>&1'
 vt.contShell(cmd)  # learn read orientations
 
 # min reads per strand down from 5 -> 1, we can do additional downstream filtering
 # remove hard filtering of AF (--min-allele-fraction 0.05), conduct own AF filtering
 cmd = f'export OMP_NUM_THREADS={args.threads} && \
     gatk --java-options "-Xmx{args.memory}" FilterMutectCalls \
-    -V {base_dir}/{args.output}.vcf \
+    -V {tmp_dir}/{args.output}.vcf \
     -R {args.reference} \
-    -O {base_dir}/{args.output}.tmp.vcf \
+    -O {tmp_dir}/{args.output}.tmp.vcf \
 	--microbial-mode \
 	--min-reads-per-strand 1 \
 	--max-events-in-region 1 \
-    --ob-priors {base_dir}/{args.output}.readorientationmodel.tar.gz 2>&1'
+    --ob-priors {tmp_dir}/{args.output}.readorientationmodel.tar.gz 2>&1'
 vt.contShell(cmd)  # filter VCF using read orientation model
 
 # split multiallele records
-cmd = f'bcftools norm -m - {base_dir}/{args.output}.tmp.vcf -o {base_dir}/{args.output}.split.tmp.vcf 2>&1'
+cmd = f'bcftools norm -m - {tmp_dir}/{args.output}.tmp.vcf -o {tmp_dir}/{args.output}.split.tmp.vcf 2>&1'
 vt.contShell(cmd)
 
 # recalculate AF and apply filters
 pass_stats = editMutect2VCF(
-    f'{base_dir}/{args.output}.split.tmp.vcf',
+    f'{tmp_dir}/{args.output}.split.tmp.vcf',
     f'{base_dir}/{args.output}.mutect2.pass.vcf',
     fail_path=f'{base_dir}/{args.output}.mutect2.fail.vcf',
     filter_functions=filter_functions)
@@ -183,4 +178,8 @@ results_df = pd.DataFrame(
 
 results_df.to_csv(
     f'{base_dir}/{args.output}.results.csv')
+
+if args.keep_tmp is not True:
+    rmtree(tmp_dir, ignore_errors=True)
+
 sys.exit(0)

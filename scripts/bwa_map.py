@@ -4,6 +4,7 @@ import argparse, os, sys
 import numpy as np
 import pandas as pd
 import mtbvartools as vt
+from shutil import rmtree
 
 # functions for parsing outputs
 def parseBAMStats(filename):
@@ -53,9 +54,9 @@ parser.add_argument(
 parser.add_argument(
     '-t', '--threads', type=int, default=1, help='number of threads to use')
 parser.add_argument(
-    '--use-tmp', action='store_true', help='use tmp storage folder (via symbolic links) for working computation')
-parser.add_argument(
     '--tmp-path', type=str, default='/tmp/')
+parser.add_argument(
+    '--keep-tmp', action='store_true', help='keep step temporary files')
 parser.add_argument(
     '--overwrite', action='store_true', help='ignore result files and overwrite')
 
@@ -72,16 +73,10 @@ elif os.path.exists(fin_path):
 else:
     raise ValueError('No fastqs matching expected PE or SE patterns.\n' + '\n'.join([fin_path, 'or...', fin_path1, fin_path2]))
 
-if args.use_tmp:
-    base_dir = f'{args.tmp_path}/{args.output}/bwa_map'
-    os.makedirs(base_dir, exist_ok=True)
-    try:
-        os.symlink(base_dir, f'{args.dir}/{args.output}/bwa_map', target_is_directory=True)
-    except FileExistsError:
-        pass  # assume that the symlink exists from a previous run
-else:
-    base_dir = f'{args.dir}/{args.output}/bwa_map'
-    os.makedirs(base_dir, exist_ok=True)
+tmp_dir = f'{args.tmp_path}/bwa_map'
+os.makedirs(tmp_dir, exist_ok=True)
+base_dir = f'{args.dir}/{args.output}/bwa_map'
+os.makedirs(base_dir, exist_ok=True)
 
 if not args.overwrite and os.path.exists(f'{base_dir}/{args.output}.results.csv'):
     print(f'{base_dir}/{args.output}.results.csv found, exiting....')
@@ -93,7 +88,7 @@ if is_paired:
     cmd = f"\
         bwa mem -t {args.threads} \
         -R '@RG\\tID:{args.output}\\tSM:{args.output}' \
-        -o {base_dir}/{args.output}.sam \
+        -o {tmp_dir}/{args.output}.sam \
         {args.fasta} {fin_path1} {fin_path2} 2>&1"
 
 else:  # single end
@@ -101,7 +96,7 @@ else:  # single end
     cmd = f"\
         bwa mem -t {args.threads} \
         -R '@RG\\tID:{args.output}\\tSM:{args.output}' \
-        -o {base_dir}/{args.output}.sam \
+        -o {tmp_dir}/{args.output}.sam \
         {args.fasta} {fin_path} 2>&1"
 vt.contShell(cmd)
 
@@ -110,7 +105,7 @@ print('sorting and indexing bam file....')
 cmd = f'\
     samtools sort -@ {args.threads} \
     -o {base_dir}/{args.output}.bam \
-    {base_dir}/{args.output}.sam 2>&1 \
+    {tmp_dir}/{args.output}.sam 2>&1 \
     && samtools index -@ {args.threads} {base_dir}/{args.output}.bam 2>&1'
 vt.contShell(cmd)
 
@@ -130,4 +125,8 @@ results_df = pd.DataFrame(
     columns=[args.output]).T
 results_df.to_csv(
     f'{base_dir}/{args.output}.results.csv')
+
+if args.keep_tmp is not True:
+    rmtree(tmp_dir, ignore_errors=True)
+
 sys.exit(0)

@@ -15,19 +15,9 @@ def mergeResults(current_df, target_path):
         print(f'Results file: "{target_path}" does not exist.')
         sys.exit(1)
 
-
-def cleartmp(target_directory):
-    for path in os.listdir(target_directory):
-        full_path = f'{target_directory}/{path}'
-        if os.path.islink(full_path):  # get links
-            print(f'removing & unlinking tmp storage at {full_path}')
-            rmtree(os.path.realpath(full_path))
-            os.unlink(full_path)
-
-
 def errorExit(args, results_df):
-    cleartmp(  # clear temporary directories (if any)
-        f'{args.dir}/{args.output}')
+    if args.keep_tmp is not True:
+        rmtree(tmp_path)
     results_df.loc[args.output, 'exit_type'] = 'ERROR'
     sw.end('pipeline', f'{results_dir}/times.txt', 'ERROR')
     sw.report(f'{results_dir}/times.csv')
@@ -36,11 +26,11 @@ def errorExit(args, results_df):
 
 
 def politeExit(args, results_df, exit_type):
+    if args.keep_tmp is not True:
+        rmtree(tmp_path)
     results_df.loc[args.output, 'exit_type'] = exit_type
     sw.end('pipeline', f'{results_dir}/times.txt', exit_type)
     sw.report(f'{results_dir}/times.csv')
-    cleartmp(  # clear temporary directories (if any)
-        f'{args.dir}/{args.output}')
     if args.keep_intermediates is False:
         for name in os.listdir(f'{args.dir}/{args.output}'):
             if name != 'results':
@@ -76,12 +66,10 @@ parser.add_argument(
     '-m', '--memory', type=str, default='6000m', help='amount of memory to allocate.')
 parser.add_argument(
     '--overwrite', action='store_true', help='ignore result files and overwrite')
-# NOTE: list of scripts with fully implemented tmp usage:
-# tbprofiler.py
 parser.add_argument(
-    '--use-tmp', action='store_true', help='use tmp storage folder (via symbolic links) for working computation')
+    '--tmp-path', type=str, default='/tmp/', help='set to FALSE to keep tmp files in base directory.')
 parser.add_argument(
-    '--tmp-path', type=str, default='/tmp/')
+    '--keep-tmp', action='store_true', help='keep step temporary files')
 parser.add_argument(
     '--keep-intermediates', action='store_true', help='keep step intermediates')
 
@@ -111,12 +99,20 @@ parser.add_argument(
 
 args = parser.parse_args()
 
+# prepare results path
 results_dir = f'{args.dir}/{args.output}/results/'
 os.makedirs(results_dir, exist_ok=True)
 
 if not args.overwrite and os.path.exists(f'{results_dir}/{args.output}.results.csv'):
     print(f'FINAL SUMMARY FILE: {results_dir}/{args.output}.results.csv found, exiting....')
     sys.exit(0)
+
+# prepare temporary path
+if args.tmp_path == 'FALSE':
+    tmp_path = f'{args.dir}/{args.output}/tmp/'
+else:
+    tmp_path = f'{args.tmp_path}/{args.output}/'
+os.makedirs(tmp_path, exist_ok=True)
 
 # start results DF
 results_df = pd.DataFrame(index=[args.output])
@@ -128,9 +124,11 @@ sw.start('pipeline', f'{results_dir}/times.txt')
 try:  # global error handling
     #### PRE-SCRIPT CALCULATIONS ####
     # common args
-    common_args = f'-o {args.output} -d {args.dir}'
+    common_args = f'-o {args.output} -d {args.dir} --tmp-path {tmp_path}'
     if args.overwrite:
         common_args += ' --overwrite'
+    if args.keep_tmp:
+        common_args += ' --keep-tmp'
     # fasta reference length
     ref_len = pysam.FastaFile(
         args.fasta).lengths[0]
@@ -219,8 +217,6 @@ try:  # global error handling
         --lineage-snp-threshold {args.lineage_snp_threshold} \
         --lineage-snp-count {args.lineage_snp_count} \
         --threads {args.threads} {common_args}'
-    if args.use_tmp:
-        cmd += ' --use-tmp --tmp-path /tmp/'
     vt.contShell(cmd)
     sw.end('tb_profiler.py', f'{results_dir}/times.txt')
     results_df = mergeResults(  # get results

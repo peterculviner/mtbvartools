@@ -1,10 +1,11 @@
 #!/usr/bin/env -S python -u
 
-import argparse, os, sys, shutil
+import argparse, os, sys
 import numpy as np
 import pandas as pd
 import mtbvartools as vt
 import json
+from shutil import rmtree
 
 
 def parseLineageCalls(path, lower=5, upper=95):
@@ -143,9 +144,9 @@ parser.add_argument(
     '--lineage-snp-count', type=float, default=5,
     help='number of tbprofiler snps required to define a lineage')
 parser.add_argument(
-    '--use-tmp', action='store_true', help='use tmp storage folder (via symbolic links) for working computation')
-parser.add_argument(
     '--tmp-path', type=str, default='/tmp/')
+parser.add_argument(
+    '--keep-tmp', action='store_true', help='keep step temporary files')
 parser.add_argument(
     '--overwrite', action='store_true', help='ignore result files and overwrite')
 
@@ -155,6 +156,8 @@ args, _ = parser.parse_known_args()
 if not os.path.exists(args.in_bam):
     raise ValueError(f'BAM file {args.in_bam} not found.')
 
+tmp_dir = f'{args.tmp_path}/tb_profiler'
+os.makedirs(tmp_dir, exist_ok=True)
 base_dir = f'{args.dir}/{args.output}/tb_profiler'
 os.makedirs(base_dir, exist_ok=True)
 
@@ -162,33 +165,24 @@ if not args.overwrite and os.path.exists(f'{base_dir}/{args.output}.results.csv'
     print(f'{base_dir}/{args.output}.results.csv found, exiting....')
     sys.exit(0)
 
-if args.use_tmp:  # overwrite base dir to tmp_path
-    real_dir = base_dir
-    base_dir = f'{args.tmp_path}/{args.output}/tb_profiler'
-    os.makedirs(base_dir, exist_ok=True)
-    # remove whatever exists at real_dir
-    if os.islink(real_dir):
-        os.unlink(real_dir)
-    else:
-        shutil.rmtree(real_dir)
 
 # run TBProfiler
 print('\nRunning TBProfiler for lineage calling....')
 # write a fresh bam file with "Chromosome" as reference name (required for proper execution of tb-profiler)
 cmd = f"\
-    samtools view -h {args.in_bam} | sed 's/NC_000962\.3/Chromosome/g' | samtools view -b -o {base_dir}/{args.output}.bam"
+    samtools view -h {args.in_bam} | sed 's/NC_000962\.3/Chromosome/g' | samtools view -b -o {tmp_dir}/{args.output}.bam"
 vt.contShell(cmd)
 # copy tb-profiler database to a temporary folder to prevent file access traffic jams
-os.makedirs(f'{base_dir}/database', exist_ok=True)
+os.makedirs(f'{tmp_dir}/database', exist_ok=True)
 cmd = f'\
-    db=$(tb-profiler list_db | cut -f5); cp $db* {base_dir}/database'
+    db=$(tb-profiler list_db | cut -f5); cp $db* {tmp_dir}/database'
 vt.contShell(cmd)
 # run tb-profiler, save results file
 cmd = f'\
-    cd {base_dir} && tb-profiler profile --threads {args.threads} --external_db database/tbdb --bam {args.output}.bam --no_delly 2>&1'
+    cd {tmp_dir} && tb-profiler profile --threads {args.threads} --external_db database/tbdb --bam {args.output}.bam --no_delly 2>&1'
 vt.contShell(cmd)
 cmd = f'\
-    mv {base_dir}/results/tbprofiler.results.json {base_dir}/{args.output}.tbprofiler.json'
+    mv {tmp_dir}/results/tbprofiler.results.json {base_dir}/{args.output}.tbprofiler.json'
 vt.contShell(cmd)
 
 # get lineage and conflict calls, write to results file
@@ -201,10 +195,7 @@ results_df = pd.DataFrame(
 results_df.to_csv(
     f'{base_dir}/{args.output}.results.csv')
 
-if args.use_tmp:  # move results to real folder
-    os.unlink(real_dir)
-    os.makedirs(real_dir)
-    shutil.copy2(f'{base_dir}/{args.output}.tbprofiler.json', real_dir)
-    shutil.copy2(f'{base_dir}/{args.output}.results.csv', real_dir)
+if args.keep_tmp is not True:
+    rmtree(tmp_dir, ignore_errors=True)
 
 sys.exit(0)

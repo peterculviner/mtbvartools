@@ -3,6 +3,7 @@
 import os, argparse, sys
 import mtbvartools as vt
 import pandas as pd
+from shutil import rmtree
 
 # argument handling
 parser = argparse.ArgumentParser(
@@ -17,29 +18,23 @@ parser.add_argument(
 parser.add_argument(
     '-d', '--dir', type=str, default='.', help='output directory path')
 parser.add_argument(
-    '--use-tmp', action='store_true', help='use tmp storage folder (via symbolic links) for working computation')
-parser.add_argument(
     '--tmp-path', type=str, default='/tmp/')
+parser.add_argument(
+    '--keep-tmp', action='store_true', help='keep step temporary files')
 parser.add_argument(
     '--overwrite', action='store_true', help='ignore result files and overwrite')
 
 args, _ = parser.parse_known_args()
 
-if args.use_tmp:
-    base_dir = f'{args.tmp_path}/{args.output}/sra_download'
-    os.makedirs(base_dir, exist_ok=True)
-    try:
-        os.symlink(base_dir, f'{args.dir}/{args.output}/sra_download', target_is_directory=True)
-    except FileExistsError:
-        pass  # assume that the symlink exists from a previous run
-else:
-    base_dir = f'{args.dir}/{args.output}/sra_download'
-    os.makedirs(base_dir, exist_ok=True)
+tmp_dir = f'{args.tmp_path}/sra_download'
+os.makedirs(tmp_dir, exist_ok=True)
+base_dir = f'{args.dir}/{args.output}/sra_download'
+os.makedirs(base_dir, exist_ok=True)
 
-sra_dir = f'{base_dir}/sra/'
+sra_dir = f'{tmp_dir}/sra/'
 os.makedirs(sra_dir, exist_ok=True)
 
-fq_dir = f'{base_dir}/fastq/'
+fq_dir = f'{tmp_dir}/fastq/'
 os.makedirs(fq_dir, exist_ok=True)
 
 if not args.overwrite and os.path.exists(f'{base_dir}/{args.output}.results.csv'):
@@ -142,5 +137,8 @@ pd.DataFrame(
     index=[args.output]).to_csv(f'{base_dir}/{args.output}.results.csv')
 
 print(f'Wrote {sum(fragments)} fragments, is_paired == {all(is_paired)}')
+
+if args.keep_tmp is not True:
+    rmtree(tmp_dir, ignore_errors=True)
 
 sys.exit(0)
