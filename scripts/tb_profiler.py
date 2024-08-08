@@ -1,6 +1,6 @@
 #!/usr/bin/env -S python -u
 
-import argparse, os, sys
+import argparse, os, sys, shutil
 import numpy as np
 import pandas as pd
 import mtbvartools as vt
@@ -155,20 +155,22 @@ args, _ = parser.parse_known_args()
 if not os.path.exists(args.in_bam):
     raise ValueError(f'BAM file {args.in_bam} not found.')
 
-if args.use_tmp:
-    base_dir = f'{args.tmp_path}/{args.output}/tb_profiler'
-    os.makedirs(base_dir, exist_ok=True)
-    try:
-        os.symlink(base_dir, f'{args.dir}/{args.output}/tb_profiler', target_is_directory=True)
-    except FileExistsError:
-        pass  # assume that the symlink exists from a previous run
-else:
-    base_dir = f'{args.dir}/{args.output}/tb_profiler'
-    os.makedirs(base_dir, exist_ok=True)
+base_dir = f'{args.dir}/{args.output}/tb_profiler'
+os.makedirs(base_dir, exist_ok=True)
 
 if not args.overwrite and os.path.exists(f'{base_dir}/{args.output}.results.csv'):
     print(f'{base_dir}/{args.output}.results.csv found, exiting....')
     sys.exit(0)
+
+if args.use_tmp:  # overwrite base dir to tmp_path
+    real_dir = base_dir
+    base_dir = f'{args.tmp_path}/{args.output}/tb_profiler'
+    os.makedirs(base_dir, exist_ok=True)
+    # remove whatever exists at real_dir
+    if os.islink(real_dir):
+        os.unlink(real_dir)
+    else:
+        shutil.rmtree(real_dir)
 
 # run TBProfiler
 print('\nRunning TBProfiler for lineage calling....')
@@ -198,4 +200,11 @@ results_df = pd.DataFrame(
     columns=[args.output]).T
 results_df.to_csv(
     f'{base_dir}/{args.output}.results.csv')
+
+if args.use_tmp:  # move results to real folder
+    os.unlink(real_dir)
+    os.makedirs(real_dir)
+    shutil.copy2(f'{base_dir}/{args.output}.tbprofiler.json', real_dir)
+    shutil.copy2(f'{base_dir}/{args.output}.results.csv', real_dir)
+
 sys.exit(0)

@@ -28,7 +28,8 @@ def incrementalUpscale(client, start_scale, workers_per_tick, maximum_workers, w
             break
         time.sleep(wait)
         cluster.scale(current_scale)
-        print(f'Working on {n_tasks} tasks, scaling {n_workers} (current) -> {current_scale} (set).')
+        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        print(f'{ts} - Working on {n_tasks} tasks, scaling {n_workers} (current) -> {current_scale} (set).')
         current_scale += workers_per_tick
 
 def incrementalDownscale(client, wait=60, shutdown=True):
@@ -100,7 +101,8 @@ os.makedirs(outfile_dir)
 os.makedirs(f'{outfile_dir}/jobs')
 os.makedirs(f'{outfile_dir}/workers')
 
-print('Launching client....')
+ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+print(f'{ts} - Launching client....')
 
 cores_per_node = int(args.cores_per_process) * int(args.process_per_node)
 split_memory = re.split(r"(?<=\D)(?=\d)|(?<=\d)(?=\D)", args.memory_per_process)
@@ -115,7 +117,8 @@ cluster = SLURMCluster(
     worker_extra_args=[
         '--resources "jobs=1"'],
     job_extra_directives=[
-        f'-o {outfile_dir}/workers/worker_node-%j.out'],
+        f'-o {outfile_dir}/workers/worker_node-%j.out',
+        '--open-mode=append'],
     scheduler_options={
         'dashboard_address': args.dashboard_address})
 

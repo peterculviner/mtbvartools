@@ -76,6 +76,8 @@ parser.add_argument(
     '-m', '--memory', type=str, default='6000m', help='amount of memory to allocate.')
 parser.add_argument(
     '--overwrite', action='store_true', help='ignore result files and overwrite')
+# NOTE: list of scripts with fully implemented tmp usage:
+# tbprofiler.py
 parser.add_argument(
     '--use-tmp', action='store_true', help='use tmp storage folder (via symbolic links) for working computation')
 parser.add_argument(
@@ -129,8 +131,6 @@ try:  # global error handling
     common_args = f'-o {args.output} -d {args.dir}'
     if args.overwrite:
         common_args += ' --overwrite'
-    if args.use_tmp:
-        common_args += f' --use-tmp --tmp-path {args.tmp_path}'
     # fasta reference length
     ref_len = pysam.FastaFile(
         args.fasta).lengths[0]
@@ -219,6 +219,8 @@ try:  # global error handling
         --lineage-snp-threshold {args.lineage_snp_threshold} \
         --lineage-snp-count {args.lineage_snp_count} \
         --threads {args.threads} {common_args}'
+    if args.use_tmp:
+        cmd += ' --use-tmp --tmp-path /tmp/'
     vt.contShell(cmd)
     sw.end('tb_profiler.py', f'{results_dir}/times.txt')
     results_df = mergeResults(  # get results
