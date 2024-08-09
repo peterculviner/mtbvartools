@@ -32,27 +32,32 @@ def incrementalUpscale(client, start_scale, workers_per_tick, maximum_workers, w
         print(f'{ts} - Working on {n_tasks} tasks, scaling {n_workers} (current) -> {current_scale} (set).')
         current_scale += workers_per_tick
 
-def incrementalDownscale(client, wait=60, shutdown=True):
+def incrementalDownscale(maximum_workers, client, wait=60):
     idle_last_tick = set()
     n_workers = len(client.cluster.scheduler.workers)
     n_tasks = len(client.cluster.scheduler.tasks)
-    while n_workers > 0 or n_tasks > 0:
+    cluster = client.cluster
+    while n_tasks > 0:
         ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         if n_tasks >= n_workers:  # work aplenty
-            print(f'{ts} - Running {n_tasks} tasks on {n_workers} active workers.')
+            target_workers = min(maximum_workers, n_tasks)
+            if target_workers > n_workers:
+                print(f'{ts} - {n_tasks} tasks / {n_workers} active workers. Rescaling to {target_workers}')
+                cluster.scale(target_workers)
+            else:
+                print(f'{ts} - {n_tasks} tasks / {n_workers} active workers.')
         else:  # start retiring idle workers
             idle_this_tick = getIdle(client)
             to_close = idle_last_tick.intersection(idle_this_tick)
             client.retire_workers(to_close)
             idle_last_tick = idle_this_tick
-            print(f'{ts} - Running {n_tasks} tasks on {n_workers} active workers. Closing {len(to_close)} idle workers.')
+            print(f'{ts} - {n_tasks} tasks / {n_workers} active workers. Closing {len(to_close)} idle workers.')
         # update stats
         time.sleep(wait)
         n_workers = len(client.cluster.scheduler.workers)
         n_tasks = len(client.cluster.scheduler.tasks)
-    print('No workers and no tasks left! Downscale complete.')
-    if shutdown:
-        client.shutdown()
+    print('No tasks left! Closing the cluster.')
+    client.shutdown()
 
 
 # handle arguments
@@ -171,6 +176,6 @@ time.sleep(60)
 
 print('\n\nStarting incremental downscaling....')
 incrementalDownscale(
-    client, wait=args.downscale_wait)
+    args.max_processes, client, wait=args.downscale_wait)
 
 sys.exit(0)

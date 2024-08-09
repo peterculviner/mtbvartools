@@ -1,6 +1,6 @@
 #!/usr/bin/env -S python -u
 
-import os, argparse, sys
+import os, argparse, sys, random, subprocess, time
 import mtbvartools as vt
 import pandas as pd
 from shutil import rmtree
@@ -25,6 +25,9 @@ parser.add_argument(
     '--overwrite', action='store_true', help='ignore result files and overwrite')
 
 args, _ = parser.parse_known_args()
+
+# dealing with failure to connect to SRA
+download_attempts = 3
 
 tmp_dir = f'{args.tmp_path}/sra_download'
 os.makedirs(tmp_dir, exist_ok=True)
@@ -67,10 +70,18 @@ fragments = []
 is_paired = []
 for sra_input, suffix in data_inputs:
     base_output = f'{args.output}{suffix}'
-    vt.contShell(
-        f'rm -r -f {sra_dir}/{sra_input}')  # clear partial download(s) of SRA
-    vt.contShell(
-        f'prefetch -O {sra_dir} {sra_input}')
+    for ntry in range(download_attempts):
+        try:
+            vt.contShell(
+                f'rm -r -f {sra_dir}/{sra_input}')  # clear partial download(s) of SRA
+            vt.contShell(
+                f'prefetch -O {sra_dir} {sra_input}')
+            break
+        except subprocess.CalledProcessError as cpe:
+            sleep_time = random.randint(0, 10)
+            print(f'failed download on try {ntry + 1} retrying in {sleep_time} seconds.')
+            time.sleep(sleep_time)
+    # downloaded, now extract
     retval = vt.contShell(
         f'cd {sra_dir} && fasterq-dump -f -3 --skip-technical -O ../fastq {sra_input}', is_return=True)
     for val in retval.split('\n\n'):
