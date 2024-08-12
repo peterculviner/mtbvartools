@@ -1,4 +1,4 @@
-import subprocess, json, timeit
+import subprocess, timeit, json, os, pickle, re
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -55,37 +55,65 @@ def getJSONValues(filename, keys_list):
         {label: chainLookup(keys, loaded_json) for label, keys in keys_list})
 
 class StopWatch():
-    def start(self, name, file=None):
-        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        start = timeit.default_timer()
-        self.timestamps[name] = {'start': now, 'tstart': start}
-        out_str = f'{now} - START {name}'
-        print(out_str)
-        if file is not None:
-            with open(file, 'a') as f:
-                f.write(out_str + '\n')
+    def start(self, name, flat_file=None):
+        if name not in self.ignore:
+            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            start = timeit.default_timer()
+            self.timestamps[name] = {'start': now, 'tstart': start}
+            out_str = f'{now} - START {name}'
+            print(out_str)
+            if flat_file is not None:
+                with open(flat_file, 'a') as f:
+                    f.write(out_str + '\n')
+            if self.dict_path is not None:
+                with open(self.dict_path, 'wb') as f:
+                    pickle.dump(self.timestamps, f)
          
-    def end(self, name, file=None, notes=None):
-        if name not in self.timestamps.keys():
-            raise KeyError(f'{name} not found in tracked timestamps.')
-        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        end = timeit.default_timer()
-        record = self.timestamps[name]
-        record['end'] = now
-        record['tend'] = end
-        record['selapsed'] = round(timeit.default_timer() - record['tstart'])
-        record['elapsed'] = str(timedelta(seconds=record['selapsed']))
-        out_str = f'{now} - END {name} elapsed {record["selapsed"]} ({record["elapsed"]})'
-        if notes is not None:
-            record['notes'] = notes
-            out_str += f' NOTE: {notes}'
-        print('\n' + out_str + '\n')
-        if file is not None:
-            with open(file, 'a') as f:
-                f.write(out_str + '\n')
+    def end(self, name, flat_file=None, notes=None):
+        if name not in self.ignore:
+            if name not in self.timestamps.keys():
+                raise KeyError(f'{name} not found in tracked timestamps.')
+            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            end = timeit.default_timer()
+            record = self.timestamps[name]
+            record['end'] = now
+            record['tend'] = end
+            record['selapsed'] = round(timeit.default_timer() - record['tstart'])
+            record['elapsed'] = str(timedelta(seconds=record['selapsed']))
+            out_str = f'{now} - END {name} elapsed {record["selapsed"]} ({record["elapsed"]})'
+            if notes is not None:
+                record['notes'] = notes
+                out_str += f' NOTE: {notes}'
+            print('\n' + out_str + '\n')
+            if flat_file is not None:
+                with open(flat_file, 'a') as f:
+                    f.write(out_str + '\n')
+            if self.dict_path is not None:
+                with open(self.dict_path, 'wb') as f:
+                    pickle.dump(self.timestamps, f)
 
     def report(self, file):
-        pd.DataFrame(data=self.timestamps).T.to_csv(file)
+        with open(file, 'w') as f:
+            f.write(f'# starts={self.timestamps["info"]["starts"]}\n')
+            f.write(f'# cpu={",".join(self.timestamps["info"]["cpu"])}\n')
+            pd.DataFrame(
+                data={k: v for k, v in self.timestamps.items() if k != 'info'}).T.to_csv(f)
         
-    def __init__(self):
-        self.timestamps = {}
+    def __init__(self, dict_path=None):
+        self.dict_path = dict_path
+        if dict_path is not None and os.path.exists(dict_path):
+            with open(dict_path, 'rb') as f:
+                self.timestamps = pickle.load(f)
+            self.timestamps['info']['starts'] += 1
+            # already started once, do not overwrite completed timings
+            self.ignore = []
+            for key, value in self.timestamps.items():
+                if 'end' in value.keys():  # already complete, ignore
+                    self.ignore.append(key)
+        else:
+            self.timestamps = {'info':{'starts': 1}}
+            self.timestamps['info']['cpu'] = []
+            self.ignore = []
+        # store hardware information
+        self.timestamps['info']['cpu'].append(
+            re.sub('Model name:\s*', '', subprocess.check_output("lscpu | grep 'Model name:'", shell=True).strip().decode()))

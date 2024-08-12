@@ -118,7 +118,7 @@ os.makedirs(tmp_path, exist_ok=True)
 results_df = pd.DataFrame(index=[args.output])
 
 # start global timer
-sw = StopWatch()
+sw = StopWatch(dict_path=f'{results_dir}/timings_dict.bin')
 sw.start('pipeline', f'{results_dir}/times.txt')
 
 try:  # global error handling
