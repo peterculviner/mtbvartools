@@ -10,7 +10,8 @@ from dask.distributed import fire_and_forget
 from dask import config
 
 config.set(  # jobs expensive and text is cheap to send over network
-    {'distributed.scheduler.worker-saturation': 1})
+    {'distributed.scheduler.worker-saturation': 1,
+     'distributed.scheduler.unknown-task-duration': '1000s'})
 
 
 def getIdle(client):
