@@ -6,6 +6,7 @@ import numpy as np
 from dask.array import from_zarr
 from dask.distributed import LocalCluster
 import mtbvartools as vt
+from mtbvartools.dasktools import subproc
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
@@ -92,6 +93,7 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
             dtype=bool)
 
     # prepare function to parallelize
+    @subproc
     def preparefasta(arr_idx, label, vcf_path, miss_path):
         output = f'{label}:\n'
         # write a SNP-only VCF
@@ -158,6 +160,7 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
     for i, f in enumerate(futures):
         print(f'{i + 1} / {len(futures)}')
         print(client.gather(f))
+        f.release()
 
     print('Generating masks....')
     # MISSING SAMPLE HANDLING
@@ -238,25 +241,31 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
     output_mask_zarr[:] = passing_output_mask
 
     # define a function for trimming fastas
-
+    @subproc
     def trimfasta(label):
         fasta_file = pysam.FastaFile(f'{tmp_dir}/{label}.fasta')
         # convert to numpy array for indexing
         fasta_array = np.fromiter(
             fasta_file.fetch(fasta_file.references[0]), dtype='U1')
-        trimmed_string = ''.join(fasta_array[passing_output_mask])
+        # open output mask
+        output_mask = zarr.open(
+            f'{args.out_dir}/{args.output}.mask.zarr', mode='r')[:]
+        trimmed_string = ''.join(fasta_array[output_mask])
         with open(f'{tmp_dir}/{label}.trimmed.fasta', 'w') as fo:
             fo.write(f'>{label}\n{trimmed_string}\n')
+        return label
 
     # write a trimmed fasta for each sample
     futures = [
         client.submit(trimfasta, label)
         for label in sample_sheet_df.label]
-    [client.gather(f) for f in futures]
+    for f in futures:
+        client.gather(f)
+        f.release()
 
     print('Merging fasta outputs and cleaning up....')
     vt.contShell(f'\
-        cat {tmp_dir}/*.trimmed.fasta > {args.out_dir}/{args.output}.fasta')
+        for file in {tmp_dir}/*.trimmed.fasta; do cat "$file" >> {args.out_dir}/{args.output}.fasta; done')
     vt.contShell(f'\
         rm -r {tmp_dir}')
     
