@@ -48,6 +48,29 @@ def getLineageCall(evidence_dict, target_level=0, min_snps=2, min_fraction=95):
         data=[','.join(output_lineages), len(output_lineages)])
 
 
+def getDeepestCall(evidence_dict, min_snps=2, min_fraction=95):
+    evidence = pd.Series(evidence_dict)
+    try:
+        if len(evidence) == 0:
+            return 'NONE'
+        levels = evidence.index.str.count('\.')
+        target_level = max(levels)
+        while target_level != -1:
+            target_evidence = evidence[levels == target_level]
+            passing_evidence = []
+            for i, e in target_evidence.items():
+                if e['mean'] > min_fraction and len(e['raw']) > min_snps:
+                    passing_evidence.append(i)
+            if len(passing_evidence) > 1:
+                return 'CONFLICT'
+            if len(passing_evidence) == 1:
+                return passing_evidence[0]
+            target_level -= 1
+        return 'NONE'
+    except:
+        return 'NONE'
+
+
 def getLineageConflicts(evidence_dict):
         visited_keys = []  # record visited nodes
         all_keys = np.asarray(
@@ -117,8 +140,11 @@ def parseConflictData(filename, min_snps=5, min_fraction=95):
         try:
             edict = parseLineageCalls(filename)
             lineage_call = getLineageCall(edict, target_level=0, min_snps=min_snps, min_fraction=min_fraction)
+            deepest_call = pd.Series(
+                    index=['deepest_call'],
+                    data=[getDeepestCall(edict, min_snps=min_snps, min_fraction=min_fraction)])
             conflict_data = getLineageConflicts(edict).iloc[0]
-            return pd.concat([lineage_call, conflict_data])
+            return pd.concat([lineage_call, deepest_call, conflict_data])
         except FileNotFoundError:
             return pd.Series()
 
@@ -186,9 +212,6 @@ cmd = f'\
 vt.contShell(cmd)
 
 # get lineage and conflict calls, write to results file
-evidence_dict = parseLineageCalls(f'{base_dir}/{args.output}.tbprofiler.json')
-lineage_calls = getLineageCall(
-    evidence_dict, target_level=0, min_snps=args.lineage_snp_count, min_fraction=args.lineage_snp_threshold)
 results_df = pd.DataFrame(
     data=parseConflictData(f'{base_dir}/{args.output}.tbprofiler.json', min_snps=args.lineage_snp_count, min_fraction=args.lineage_snp_threshold),
     columns=[args.output]).T
