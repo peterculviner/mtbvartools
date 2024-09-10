@@ -91,6 +91,9 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
             shape=(len(sample_sheet_df), genome_len),
             chunks=(1, genome_len),
             dtype=bool)
+    
+    # initialize results dictionary
+    results_dict = {'n_samples': len(sample_sheet_df)}
 
     # prepare function to parallelize
     @subproc
@@ -171,6 +174,9 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
     # generate a global missing position mask where positions are less than threshold
     pass_miss_mask = fraction_miss < args.miss_threshold
     print(f'{pass_miss_mask.sum()}/{genome_len} sites pass miss threshold of {args.miss_threshold}')
+    results_dict['genome_len'] = genome_len
+    results_dict['miss_threshold'] = args.miss_threshold
+    results_dict['pass_miss_threshold_sites'] = pass_miss_mask.sum()
 
 
     # VARIANT POSITION HANDLING
@@ -191,6 +197,9 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
     # print statistics
     print(f'{variant_mask.sum()} sites have variants in at least 1 sample.')
     print(f'{variant_output_mask.sum()} sites have variants in at least {args.min_strain_count} sample(s), and will be considered for output.')
+    results_dict['variant_sites'] = variant_mask.sum()
+    results_dict['minimum_variant_strains_to_consider'] = args.min_strain_count
+    results_dict['considered_variant_sites'] = variant_output_mask.sum()
 
 
     # BED MASK HANDLING
@@ -203,8 +212,10 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
         bed_mask_idx = np.asarray([gidx for gidx, s in enumerate(fasta_str) if s == 'X'])
         pass_bed_mask[bed_mask_idx] = False
         print(f'Using BED mask, masked {len(bed_mask_idx)} positions.')
+        results_dict['bed_mask_sites'] = len(bed_mask_idx)
     else:
         print('No BED mask provided, so no positions masked.')
+        results_dict['bed_mask_sites'] = 0
 
 
     # PRINT INVARIANT, VARIANT, and OUTPUT COUNTS
@@ -229,6 +240,9 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
         ], axis=0)
     print(
         f'{passing_output_mask.sum()} sites passing miss and BED masks were variant in at least {args.min_strain_count} sample(s) and will be in output.')
+    results_dict['passing_invariant_sites'] = passing_invariant_mask.sum()
+    results_dict['passing_variant_sites'] = passing_variant_mask.sum()
+    results_dict['passing_output_sites'] = passing_output_mask.sum()
 
     print('Writing filtered fasta outputs....')
     # WRITE OUTPUT AND RECORD MASK
@@ -268,6 +282,11 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
         for file in {tmp_dir}/*.trimmed.fasta; do cat "$file" >> {args.out_dir}/{args.output}.fasta; done')
     vt.contShell(f'\
         rm -r {tmp_dir}')
+    
+    print('Writing results summary....')
+    pd.Series(
+        data=results_dict,
+        name=args.output).to_csv(f'{args.out_dir}/{args.output}.results.csv')
     
     elapsed = timeit.default_timer() - start_time
     print(f'finished in {int(elapsed)}s or {int(elapsed/60)}m')
