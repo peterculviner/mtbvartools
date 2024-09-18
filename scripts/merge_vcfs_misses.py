@@ -1,12 +1,13 @@
 #!/usr/bin/env -S python -u
 
-import subprocess, argparse, os, pysam, dask, zarr, sys, timeit
+import argparse, os, pysam, zarr, sys, timeit, glob
 import pandas as pd
 import numpy as np
 import os.path
 from rechunker import rechunk
-from zarr.errors import PathNotFoundError
-from dask.distributed import LocalCluster
+from dask.distributed import as_completed
+import mtbvartools as vt
+from mtbvartools.dasktools import subproc, startClient
 
 env_bin = ''  # for testing if environment path needed
 
@@ -14,54 +15,99 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
 
     start_time = timeit.default_timer()  # timer
 
-    # run on command on shell while updating stdout
-    def contShell(cmd, is_return=False):
-        def yieldcmd(cmd):
-            popen = subprocess.Popen(
-                cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-            for stdout_line in iter(popen.stdout.readline, ""):
-                yield stdout_line
-            popen.stdout.close()
-            return_code = popen.wait()
-            if return_code:
-                raise subprocess.CalledProcessError(return_code, cmd)
-        if not is_return:
-            for line in yieldcmd(cmd):
-                print(line[:-1])
-        if is_return:
-            output = [line for line in yieldcmd(cmd)]
-            if len(output) > 0:
-                return '\n'.join(output)
-            else:
-                return ''
-
-    def mergeFileList(prev_file, target_file, merge_list):
+    @subproc
+    def mergeJob(vcf_list, output_name, chromosome, start, end, merge_level, threads=1):
         # write to a temporary merge list
-        with open(f'{tmp_dir}/merge_list.txt', 'w') as f:
-            f.write(f'{prev_file}\n')
-            for vcf_path in merge_list: 
-                f.write(f'{vcf_path}\n')
-        # conduct the merge
-        print(f'merging {prev_file} + {len(merge_list)} vcfs -> {target_file}')
-        contShell(f'\
-            {env_bin}bcftools merge --threads {args.local_threads} \
-            -i "-" --missing-to-ref -m none -l {tmp_dir}/merge_list.txt -O z -o {target_file} --write-index')
+        with open(f'{output_name}.list', 'w') as f:
+            for path in vcf_list:
+                f.write(f'{path}\n')
+        if merge_level == 1:
+            if len(vcf_list) > 1:
+                # conduct the merge
+                vt.contShell(f'\
+                    {env_bin}bcftools merge --threads {threads} \
+                    -r {chromosome}:{start}-{end} \
+                    -i "-" --missing-to-ref -m none \
+                    -l {output_name}.list | \
+                    {env_bin}bcftools view --threads {threads} \
+                    -O z0 -o {output_name} -t {chromosome}:{start}-{end} \
+                    && {env_bin}tabix {output_name}')
+            else:
+                vt.contShell(f'\
+                    {env_bin}bcftools view --threads {threads} \
+                    -O z0 -o {output_name} \
+                    -t {chromosome}:{start}-{end} -r {chromosome}:{start}-{end} \
+                    {vcf_list[0]} && {env_bin}tabix {output_name} ')
+        else:
+            if len(vcf_list) > 1:
+                # conduct the merge
+                vt.contShell(f'\
+                    {env_bin}bcftools merge --threads {threads} \
+                    -r {chromosome}:{start}-{end} \
+                    -i "-" --missing-to-ref -m none \
+                    -l {output_name}.list -O z0 -o {output_name} && {env_bin}tabix {output_name}')
+            else:
+                vt.contShell(f'\
+                    mv {vcf_list[0]} {output_name} && {env_bin}tabix {output_name}')
+        return output_name
 
-    def chunkedVCFMerge(full_file_list, final_path, chunk_size=200):
-        pointer = 1
-        merge_list = full_file_list[pointer:pointer+chunk_size]
-        prev_file = full_file_list[0]
-        while len(merge_list) > 0:
-            target_file = f'{tmp_dir}/merge_{pointer}.vcf.gz'
-            mergeFileList(prev_file, target_file, merge_list)
-            # update pointer, merge list and prev_file
-            pointer += chunk_size
-            merge_list = full_file_list[pointer:pointer+chunk_size]
-            prev_file = target_file
-        # rename last file to the final name and index
-        print(f'moving {prev_file} to {final_path}')
-        contShell(
-            f'mv {prev_file} {final_path} && {env_bin}tabix {final_path} && echo "merge complete!"')
+
+    def treeMerge(vcf_list, output_stub, genome_len, default_merge=10, genome_splits=2, threads=1, tmp_dir='tmp', output_dir='.', merge_dict={1: 20}):
+        client = vt.findClient()
+        merge_futures = []
+        final_futures = []
+        os.makedirs(tmp_dir, exist_ok=True)
+        # get refrence name
+        with pysam.VariantFile(vcf_list[0]) as open_vcf:
+            chromosome = open_vcf.get_reference_name(0)
+        # split the work by genome length
+        starts, ends = np.asarray([
+            np.linspace(0, genome_len, num=genome_splits + 1)[:-1] + 1,
+            np.linspace(0, genome_len, num=genome_splits + 1)[1:]]).astype(int)
+        split_stubs = [
+            f'{tmp_dir}/{output_stub}.G{i + 1}' for i in range(genome_splits)]
+        # iterate by genome splits
+        for stub, start, end in zip(split_stubs, starts, ends):
+            print(f'preparing jobs at {start}-{end}')
+            # iterate by merges
+            merge_list = vcf_list
+            merge_it = 1
+            merge_level = 1
+            while len(merge_list) > 1:
+                next_list = []
+                try:
+                    merge_size = merge_dict[merge_level]
+                except KeyError:
+                    merge_size = default_merge
+                for i in range(0, len(merge_list), merge_size):
+                    merge_name = f'{stub}.L{merge_level}.I{merge_it}.vcf.gz'
+                    merge_tick = merge_list[i:i+merge_size]
+                    future = client.submit(mergeJob, merge_tick, merge_name, chromosome, start, end, merge_level, threads=threads)
+                    next_list.append(future)
+                    merge_futures.append(future)
+                    merge_it += 1
+                merge_level += 1
+                merge_list = next_list
+            final_futures.append(future)
+        # clean up unneeded files as they are completed
+        tmp_files = []
+        for future in as_completed(merge_futures):
+            result = future.result()
+            tmp_files.append(result)
+            with open(f'{result}.list', 'r') as list_file:
+                for line in list_file:
+                    target_file = line.strip()
+                    if target_file not in vcf_list and target_file in tmp_files:  # don't delete input files
+                        # print(target_file)
+                        for f in glob.glob(f'{target_file}*'):
+                            os.remove(f)
+        # rename final datasets
+        output_files = [
+            f'{output_dir}/{output_stub}.{i + 1}.vcf.gz' for i in range(genome_splits)]
+        for outfile, future in zip(output_files, final_futures):
+            os.rename(future.result(), outfile)
+            os.rename(f'{future.result()}.tbi', f'{outfile}.tbi')
+        return output_files
 
     # argument handling
     parser = argparse.ArgumentParser(
@@ -70,95 +116,86 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
 
     # required/global inputs
     parser.add_argument(
-        '-i', '--input-csv', type=str, required=True, help='csv sample sheet')
+        '--input-csv', type=str, required=True, help='csv sample sheet')
     parser.add_argument(
-        '-d', '--dir', type=str, required=True,
+        '--inputs-dir', type=str, default='.', help='base directory to look for files in.')
+    parser.add_argument(
+        '--out-dir', default='.', type=str, required=True,
         help='output directory')
     parser.add_argument(
-        '--outgroup', type=str, default='', help='outgroup name (if any)')
+        '--outgroup', type=str, default='', help='outgroup label (if any). multiple allowed with comma separation.')
     parser.add_argument(
-        '--memory', default=10000, type=int,
-        help='maximum memory footprint in MB (for rechunker)')
+        '--split-genome', type=int, default=2, help='number of files to split genome into (for parallelization, best to ~= n_workers).')
     parser.add_argument(
-        '--local-threads', type=int, default=1, help='number of threads to use')
-    parser.add_argument(
-        '--vcf-pattern', type=str, default='{output_dir}/{output_name}/outputs/{output_name}.breseq.vcf', help='pattern to find vcf file')
-    parser.add_argument(
-        '--miss-pattern', type=str, default='{output_dir}/{output_name}/outputs/{output_name}.miss.breseq.zarr', help='pattern to find zarr file with misses')
-    parser.add_argument(
-        '--merge-chunk-size', type=int, default=1000)
+        '--merge-size', type=int, default=10, help='number of vcfs to merge at a time (for parallelization)')
     parser.add_argument(
         '--keep-intermediates', action='store_true')
+    
+    # multithreading options
+    # RECOMMENDED TO RUN WITH AT LEAST 10 THREADS
     parser.add_argument(
-        '--overwrite', action='store_true')
+        '--local-threads', type=int, default=1)
+    parser.add_argument(
+        '--n-workers', type=int, default=1)
+    parser.add_argument(
+        '--use-local', action='store_true')
+    parser.add_argument(
+        '--use-slurm', action='store_true')
+    
+    # SLURM options
+    parser.add_argument(
+        '--queue', type=str, default='sapphire')
+    parser.add_argument(
+        '--process-per-node', type=int, default=1)
+    parser.add_argument(
+        '--cores-per-process', type=int, default=1)
+    parser.add_argument(
+        '--memory-per-process', type=str, default='4GB')
+    parser.add_argument(
+        '--walltime', type=str, default='1:00:00')
+    
+
     args = parser.parse_args()
 
-    # start workers
-    # spawn dask processes
-    print('Spawning workers....')
-    cluster = LocalCluster(n_workers=args.local_threads, threads_per_worker=1)
-    client = cluster.get_client()
+    # start parallel workers with dask
+    client = startClient(log_dir=args.out_dir, **args.__dict__)
 
-    # parse sample sheet for errors, convert to paths
-    print('Reading sample sheet & output directory....')
-    input_csv_df = pd.read_csv(args.input_csv)
-    sample_sheet_data = []
-    if any(~np.isin(['output_name', 'output_dir'], input_csv_df.columns)):
+    # parse sample sheet for errors
+    print('Reading sample sheet....')
+    sample_sheet_df = pd.read_csv(args.input_csv)
+    if any(~np.isin(['label', 'vcf_path', 'miss_path'], sample_sheet_df.columns)):
         raise ValueError('One or more required columns in sample sheet is missing.')
-    do_not_exist = []
-    # check for vcf, miss zarr
-    for i, rdata in input_csv_df.iterrows():
-        vcf_path = args.vcf_pattern.replace(
-            '{output_dir}', rdata.output_dir).replace('{output_name}', rdata.output_name)
-        miss_path = args.miss_pattern.replace(
-            '{output_dir}', rdata.output_dir).replace('{output_name}', rdata.output_name)
-        # append converted paths
-        sample_sheet_data.append([vcf_path, miss_path])
-        # store missing file(s) for error
-        for f in [vcf_path, miss_path]:
-            if not os.path.exists(f):
-                do_not_exist.append(f.split('/')[-1])
-    if len(do_not_exist) > 0:
-        output_str = '\n  '.join(do_not_exist)
-        raise ValueError(f'\nThe following files were not found:\n  {output_str}')
-    # convert to a sample sheet
-    sample_sheet_df = pd.DataFrame(
-        data=sample_sheet_data,
-        columns=['alt_path', 'miss_path'])
-
-    # check for outputs
-    if args.overwrite:
-        contShell(f'rm -f -r {args.dir}')
-    else:
-        if os.path.exists(args.dir):
-            raise OSError(f'Output directory {args.dir} exists. To overwrite, add --overwrite flag')
     
     # generate directory structure
-    tmp_dir = f'{args.dir}/tmp/'
+    tmp_dir = f'{args.out_dir}/tmp/'
     os.makedirs(f'{tmp_dir}', exist_ok=True)
 
     print(f'Zipping VCF files if not already ({int(timeit.default_timer() - start_time)}s elapsed)....')
     # gzip and index vcf inputs (if not already)
-    gzipVCF = lambda file_path: contShell(
-        f'bcftools view {file_path} -O z -o {tmp_dir}/{file_path.split("/")[-1]}.gz && tabix {tmp_dir}/{file_path.split("/")[-1]}.gz')
-    delayed_calls = []
-    updated_alt_path = []
-    for alt_path in sample_sheet_df.alt_path:
-        if alt_path[-3:] != '.gz':
-            delayed_calls.append(
-                dask.delayed(gzipVCF)(alt_path))
-            updated_alt_path.append(f'{tmp_dir}/{alt_path.split("/")[-1]}.gz')
-        else:
-            updated_alt_path.append(alt_path)
-    if len(delayed_calls) > 0:
-        dask.compute(*delayed_calls)
-    sample_sheet_df.loc[:, 'alt_path'] = updated_alt_path
+    @subproc
+    def gzipVCF(file_path):
+        vt.contShell(f'bcftools view {file_path} -O z -o {tmp_dir}/{file_path.split("/")[-1]}.gz && tabix {tmp_dir}/{file_path.split("/")[-1]}.gz')
+        
+    futures = []
+    updated_vcf_path = []
+    for i, vcf_path in enumerate(sample_sheet_df.vcf_path):
+        if vcf_path[-3:] != '.gz':  # edit path
+            futures.append(client.submit(
+                gzipVCF, f'{args.inputs_dir}/{vcf_path}', priority=len(sample_sheet_df) - i))
+            updated_vcf_path.append(f'{tmp_dir}/{vcf_path.split("/")[-1]}.gz')
+        else:  # in place
+            updated_vcf_path.append(f'{args.inputs_dir}/{vcf_path}')
+    if len(futures) > 0:
+        for f in futures:
+            client.gather(f)
+            f.release()
+    sample_sheet_df.loc[:, 'vcf_path'] = updated_vcf_path
 
 
-    print(f'Merging data for {len(sample_sheet_df.alt_path)} samples ({int(timeit.default_timer() - start_time)}s elapsed)....')
+    print(f'Merging data for {len(sample_sheet_df.vcf_path)} samples ({int(timeit.default_timer() - start_time)}s elapsed)....')
     # initialize zarr array tracking miss locations
     genome_len = zarr.open(
-        sample_sheet_df.loc[sample_sheet_df.index[0], 'miss_path'], mode='r').shape[0]
+        f"{args.inputs_dir}/{sample_sheet_df.loc[sample_sheet_df.index[0], 'miss_path']}", mode='r').shape[0]
     miss_array = zarr.open(
             f'{tmp_dir}/miss_array_by_strain.zarr', mode='w',
             shape=(len(sample_sheet_df), genome_len),
@@ -170,41 +207,44 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
     # (2) rechunk miss array to be read by columns (genomic positions)
 
     # prepare function to parallelize
+    @subproc
     def writeMissArray(arr_idx, miss_path):
         # apply missing sites to the fasta
         miss_array[arr_idx, :] = zarr.open(miss_path, mode='r')[:]
 
     print(f'Writing miss array sample-wise ({int(timeit.default_timer() - start_time)}s elapsed)....')
     # parallel write
-    delayed_calls = []
-    for arr_idx, (i, sdata) in enumerate(sample_sheet_df.iterrows()):
-        delayed_calls.append(
-            dask.delayed(writeMissArray)(arr_idx, sdata.miss_path))
-    dask_output = dask.compute(
-        *delayed_calls)
+    futures = []
+    for i, miss_path in enumerate(sample_sheet_df.miss_path):
+        futures.append(
+            client.submit(writeMissArray, i, f'{args.inputs_dir}/{miss_path}', priority=len(sample_sheet_df)-i))
+    for f in futures:
+        client.gather(f)
+        f.release()
 
     print(f'Rechunking miss array position-wise ({int(timeit.default_timer() - start_time)}s elapsed)....')
     # parallel rechunk
     rechunked = rechunk(
         miss_array,
         target_chunks=(miss_array.shape[0], 1000),
-        target_store=f'{args.dir}/miss_array_by_pos.zarr',
-        max_mem=f'{args.memory / args.local_threads}MB',
+        target_store=f'{args.out_dir}/miss_array_by_pos.zarr',
+        max_mem=f'1GB',
         temp_store=f'{tmp_dir}/intermediate.zarr')
     rechunked.execute(
-        num_workers=args.local_threads)
+        num_workers=args.n_workers)
 
 
     print(f'Merging input VCFs ({int(timeit.default_timer() - start_time)}s elapsed)....')
     # MERGE INPUT VCFS BY SAMPLE
-    # (1) split files into groups no larger than chunk size
-    # (2) sequentially, generate a list of vcfs for input into bcftools
-    # (3) merge the vcfs with bcftools merge, index
-    # TO DO: Write parallel function for handling this....
-    chunkedVCFMerge(
-        sample_sheet_df.alt_path.values,
-        f'{tmp_dir}/raw_merge.vcf.gz',
-        chunk_size=args.merge_chunk_size)
+    # (1) split VCFs across genome in (genome_len / genome_splits) sized blocks
+    # (2) in order, merge (merge_size) groups of VCFs to generate a tree of merges ending with a single file for each genome split 
+    merged_vcfs = treeMerge(
+        vcf_list=sample_sheet_df.vcf_path.values,
+        output_stub='raw_merge',
+        default_merge=args.merge_size,
+        genome_len=genome_len,
+        genome_splits=args.split_genome,
+        tmp_dir=tmp_dir, output_dir=tmp_dir)
 
 
     print(f'Editing merged VCF to include miss locations ({int(timeit.default_timer() - start_time)}s elapsed)....')
@@ -214,7 +254,7 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
     # check for outgroup
     if args.outgroup != '':
         print(f'Searching for outgroup {args.outgroup}....')
-        is_outgroup = (input_csv_df.output_name == args.outgroup).values
+        is_outgroup = np.isin(sample_sheet_df.label, args.outgroup.split(','))
         if np.any(is_outgroup) == False:
             raise ValueError('Outgroup not found in label values.')
         else:
@@ -223,28 +263,20 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
     else:
         has_outgroup = False
 
-    # split the work
-    starts, ends = np.asarray([
-        np.linspace(0, genome_len, num=args.local_threads + 1)[:-1],
-        np.linspace(0, genome_len, num=args.local_threads + 1)[1:]]).astype(int)
-    file_paths = [f'{tmp_dir}/merged.unsplit.{i}.vcf' for i in range(args.local_threads)]
-
     # define a parallel function
-    def writeRecords(output_path, start, end):
+    @subproc
+    def writeRecords(input_path, output_path):
         # open miss array
         miss_array = zarr.open(
-            f'{args.dir}/miss_array_by_pos.zarr', mode='r')
+            f'{args.out_dir}/miss_array_by_pos.zarr', mode='r')
         # open input and output vcfs
         vcf_in = pysam.VariantFile(
-            f'{tmp_dir}/raw_merge.vcf.gz')
+            input_path)
         vcf_out = pysam.VariantFile(
             output_path, 'w', header=vcf_in.header)
         written, skipped, outgroup_only = 0, 0, 0
         # fetch records in required region
-        for record in vcf_in.fetch(contig=vcf_in.get_reference_name(0), start=start, end=end):
-            # ignore records outside of defined region
-            if record.pos - 1 < start or record.pos - 1 >= end:
-                continue
+        for record in vcf_in.fetch(contig=vcf_in.get_reference_name(0)):
             # get ordered ref and miss array
             sample_ids = np.asarray([sid for sid in record.samples])
             is_ref = np.asarray([record.samples[sid]['GT'] == (0, 0) for sid in sample_ids])
@@ -277,20 +309,32 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
         return written, skipped, outgroup_only
 
     # execute in parallel
-    delayed_calls = []
-    for fp, s, e in zip(file_paths, starts, ends):
-        # parallel write
-        delayed_calls.append(
-            dask.delayed(writeRecords)(fp, s, e))
-    dask_output = dask.compute(*delayed_calls)
+    futures = []
+    files_to_merge = []
+    for i, input_path in enumerate(merged_vcfs):
+        output_path = f'{tmp_dir}/added_miss.{i}.vcf'
+        futures.append(
+            client.submit(writeRecords, input_path, output_path))
+        files_to_merge.append(output_path)
+    dask_output = []
+    for f in as_completed(futures):
+        dask_output.append(client.gather(f))
+        f.release()
 
+    print('Shutting down dask workers (no more parallel steps).')
+    # last parallel step
+    client.shutdown()
+    print('\n\n')
+
+
+    print(f'Merging files split files into final record ({int(timeit.default_timer() - start_time)}s elapsed)....')
     # merge files
-    with open(f'{tmp_dir}/concat_list.txt', 'w') as f:
-        for fp in file_paths:
-            f.write(f'{fp}\n')
-    contShell(f'\
-        {env_bin}bcftools concat --threads {args.local_threads} -f {tmp_dir}/concat_list.txt -O z -o {args.dir}/merged.filtered.vcf.gz && \
-        {env_bin}tabix {args.dir}/merged.filtered.vcf.gz')
+    with open(f'{tmp_dir}/concat_list.txt', 'w') as fout:
+        for fp in files_to_merge:
+            fout.write(f'{fp}\n')
+    vt.contShell(f'\
+        {env_bin}bcftools concat --threads {args.local_threads} -f {tmp_dir}/concat_list.txt -O z9 -o {args.out_dir}/merged.filtered.vcf.gz && \
+        {env_bin}tabix {args.out_dir}/merged.filtered.vcf.gz')
     if has_outgroup:
         written, skipped, outgroup_only = np.asarray(
             dask_output).sum(axis=0)
@@ -299,18 +343,9 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
         written, skipped, _ = np.asarray(
             dask_output).sum(axis=0)
         print(f'{written} lines written, {skipped} lines skipped.')
-    # compare against raw merge to ensure no skipped lines
-    input_lines = int(contShell(f'\
-        {env_bin}bcftools view -H {tmp_dir}/raw_merge.vcf.gz | wc -l', True).replace('\n', ''))
-    if input_lines == written + skipped:
-        print(f'output verification: {input_lines} input lines match written + skipped.\nCleaning up....')
-    else:
-        raise ValueError(
-            f'{input_lines} input lines DOES NOT match written + skipped = {written + skipped}')
     if args.keep_intermediates is False:
-        contShell(f'rm -r {tmp_dir}')
+        vt.contShell(f'rm -r {tmp_dir}')
+    
     elapsed = timeit.default_timer() - start_time
     print(f'finished in {int(elapsed)}s or {int(elapsed/60)}m')
-
-    client.shutdown()
     sys.exit(0)
