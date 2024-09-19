@@ -16,7 +16,7 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
     start_time = timeit.default_timer()  # timer
 
     @subproc
-    def mergeJob(vcf_list, output_name, chromosome, start, end, merge_level, threads=1):
+    def mergeJob(vcf_list, output_name, chromosome, start, end, merge_level, rm_inputs=False, threads=1):
         # write to a temporary merge list
         with open(f'{output_name}.list', 'w') as f:
             for path in vcf_list:
@@ -49,12 +49,15 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
             else:
                 vt.contShell(f'\
                     mv {vcf_list[0]} {output_name} && {env_bin}tabix {output_name}')
+        if rm_inputs:
+            for path in vcf_list:
+                for f in glob.glob(f'{path}*'):
+                    os.remove(f)
         return output_name
 
 
     def treeMerge(vcf_list, output_stub, genome_len, default_merge=10, genome_splits=2, threads=1, tmp_dir='tmp', output_dir='.', merge_dict={1: 20}):
         client = vt.findClient()
-        merge_futures = []
         final_futures = []
         os.makedirs(tmp_dir, exist_ok=True)
         # get refrence name
@@ -79,32 +82,28 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
                     merge_size = merge_dict[merge_level]
                 except KeyError:
                     merge_size = default_merge
+                # set to remove inputs for all tree levels not operating on input files
+                if merge_level > 1:
+                    rm_inputs = True
+                else:
+                    rm_inputs = False
                 for i in range(0, len(merge_list), merge_size):
                     merge_name = f'{stub}.L{merge_level}.I{merge_it}.vcf.gz'
                     merge_tick = merge_list[i:i+merge_size]
-                    future = client.submit(mergeJob, merge_tick, merge_name, chromosome, start, end, merge_level, threads=threads)
+                    future = client.submit(
+                        mergeJob, merge_tick, merge_name, chromosome, start, end, merge_level,
+                        rm_inputs=rm_inputs, threads=threads)
                     next_list.append(future)
-                    merge_futures.append(future)
                     merge_it += 1
                 merge_level += 1
                 merge_list = next_list
+            print(f'Merging via tree with {merge_it - 1} steps x {merge_level - 1} levels.')
             final_futures.append(future)
-        # clean up unneeded files as they are completed
-        tmp_files = []
-        for future in as_completed(merge_futures):
-            result = future.result()
-            tmp_files.append(result)
-            with open(f'{result}.list', 'r') as list_file:
-                for line in list_file:
-                    target_file = line.strip()
-                    if target_file not in vcf_list and target_file in tmp_files:  # don't delete input files
-                        # print(target_file)
-                        for f in glob.glob(f'{target_file}*'):
-                            os.remove(f)
         # rename final datasets
         output_files = [
             f'{output_dir}/{output_stub}.{i + 1}.vcf.gz' for i in range(genome_splits)]
         for outfile, future in zip(output_files, final_futures):
+            print(f'moving final merge {future.result()} > {outfile}')
             os.rename(future.result(), outfile)
             os.rename(f'{future.result()}.tbi', f'{outfile}.tbi')
         return output_files
