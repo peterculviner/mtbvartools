@@ -36,7 +36,7 @@ def writeVariantCalls(target_vcf, output_path, sample_list=None, compression='zl
                         record_calls[i] = 2  # miss is saved as 2
                     else:
                         raise ValueError(
-                            f'Unhandled call, {record["GT"]}, for sample {record.name}.')
+                            f'Unhandled call, for {name} at {record}')
                 # save bytestream info
                 uncompressed_bytes = bytearray(record_calls)
                 compressed_bytes = cfunc(uncompressed_bytes, **ckwargs)
