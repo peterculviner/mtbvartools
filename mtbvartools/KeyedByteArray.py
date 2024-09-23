@@ -81,10 +81,9 @@ class KeyedByteArray():
         
     def readFile(self, key):
         pointer, streamlen = self.row_dict[key]
-        with open(self.file, 'rb') as file:
-            file.seek(pointer)
-            return np.frombuffer(
-                self.decompress(file.read(streamlen)), dtype=self.dtype)
+        self.file.seek(pointer)
+        return np.frombuffer(
+            self.decompress(self.file.read(streamlen)), dtype=self.dtype)
     
     def readMem(self, key):
         pointer, streamlen = self.row_dict[key]
@@ -129,9 +128,9 @@ class KeyedByteArray():
         # submit futures to the client
         futures = []
         for i, jidxs in enumerate(job_idxs):
-            tmp_filepath = f'{os.path.dirname(self.file)}/tmp.{i}.kba'
+            tmp_filepath = f'{os.path.dirname(self.file.name)}/tmp.{i}.kba'
             futures.append(client.submit(
-                rechunkJob, self.file, tmp_filepath, jidxs,
+                rechunkJob, self.file.name, tmp_filepath, jidxs,
                 priority=len(job_idxs)-i))
         # read full files, write to output
         print('rechunking compression (for off axis random access)....')
@@ -173,7 +172,7 @@ class KeyedByteArray():
                 pointers.append(v)
             self.index['indexing']['rows'] = rows
             self.index['indexing']['pointers'] = pointers
-            with open(f'{self.file}.kbi', 'wb') as index_file:
+            with open(f'{self.file.name}.kbi', 'wb') as index_file:
                 index_file.write(
                     zlib.compress(pickle.dumps(self.index)))
         else:
@@ -212,9 +211,9 @@ class KeyedByteArray():
                 'indexing': {
                     'columns': columns}}
         elif mode == 'r':
-            self.file = filepath
+            self.file = open(filepath, mode='rb')
             # load index
-            with open(f'{self.file}.kbi', 'rb') as index_file:
+            with open(f'{filepath}.kbi', 'rb') as index_file:
                 self.index = pickle.loads(zlib.decompress((index_file.read())))
             self._initCompression(
                 self.index['compression']['compression_type'], **self.index['compression']['kwargs'])

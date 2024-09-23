@@ -46,6 +46,7 @@ def startClient(
         memory_per_process='4GB',
         walltime='1:00:00',
         dashboard_address=':10000',
+        job_script_prologue=[],
         **kwargs):
     ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     if sum([use_local, use_slurm]) != 1:
@@ -74,6 +75,7 @@ def startClient(
                 f'-o {outfile_dir}/workers/worker_node-%j.out',
                 '--open-mode=append'],
             scheduler_options={
-                'dashboard_address': dashboard_address})
+                'dashboard_address': dashboard_address},
+            job_script_prologue=job_script_prologue)
         cluster.scale(n_workers)
         return cluster.get_client()

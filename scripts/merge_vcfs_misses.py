@@ -50,10 +50,10 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
         return output_name
     
     @subproc
-    def deleteInputs(future, vcf_list):
+    def deleteInputs(parent_future, vcf_list):
         for path in vcf_list:
-            for f in glob.glob(f'{path}*'):
-                os.remove(f)
+            os.remove(path)
+            os.remove(f'{path}.tbi')
 
 
     def treeMerge(vcf_list, output_stub, genome_len, default_merge=10, genome_splits=2, threads=1, tmp_dir='tmp', output_dir='.', merge_dict={1: 20}):
@@ -71,7 +71,7 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
         split_stubs = [
             f'{tmp_dir}/{output_stub}.G{i + 1}' for i in range(genome_splits)]
         # iterate by genome splits
-        with open(f'{output_dir}/merge_plan.txt', 'w') as merge_plan:
+        with open(f'{output_dir}/merge_plan.log', 'w') as merge_plan:
             for i, (stub, start, end) in enumerate(zip(split_stubs, starts, ends)):
                 print(f'preparing jobs at {start}-{end}')
                 merge_plan.write(f'TREE {start} - {end} merges:\n')
@@ -85,23 +85,20 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
                         merge_size = merge_dict[merge_level]
                     except KeyError:
                         merge_size = default_merge
-                    # set to remove inputs for all tree levels not operating on input files
-                    if merge_level > 1:
-                        rm_inputs = True
-                    else:
-                        rm_inputs = False
                     for i in range(0, len(current_paths), merge_size):
                         merge_name = f'{stub}.L{merge_level}.I{merge_it}.vcf.gz'
                         target_paths, target_futures = current_paths[i:i + merge_size], current_futures[i:i + merge_size]
+                        # submit merge job
                         current_future = client.submit(
                             mergeJob, target_futures, merge_name, chromosome, start, end, merge_level,
                             threads=threads, priority=10)
-                        if rm_inputs:
+                        if merge_level > 1:
+                            # submit removal job, do not remove first level files
                             rm_futures.append(client.submit(
                                 deleteInputs, current_future, target_paths, priority=0))
-                            merge_plan.write(f'{" ".join(target_paths)} > {merge_name} + rm inputs\n')
-                        else:
-                            merge_plan.write(f'{" ".join(target_paths)} > {merge_name}\n')
+                        # write to log
+                        merge_plan.write(
+                            f'{" ".join(target_paths)} > {merge_name}\n')
                         next_paths.append(merge_name), next_futures.append(current_future)
                         merge_it += 1
                     merge_level += 1
@@ -222,25 +219,22 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
     os.makedirs(f'{tmp_dir}', exist_ok=True)
 
     print(f'Zipping VCF files if not already ({int(timeit.default_timer() - start_time)}s elapsed)....')
-    # gzip and index vcf inputs (if not already)
+    # split records to monoallelics into tmp folder
     @subproc
-    def gzipVCF(file_path):
-        vt.contShell(f'bcftools view {file_path} -O z -o {tmp_dir}/{file_path.split("/")[-1]}.gz && tabix {tmp_dir}/{file_path.split("/")[-1]}.gz')
+    def copyVCF(label, file_path):
+        vt.contShell(f'\
+            bcftools norm {file_path} -m - -O z0 -o {tmp_dir}/{label}.vcf.gz && \
+            tabix {tmp_dir}/{label}.vcf.gz')
         
     futures = []
     updated_vcf_path = []
-    for i, vcf_path in enumerate(sample_sheet_df.vcf_path):
-        if vcf_path[-3:] != '.gz':  # edit path
-            futures.append(client.submit(
-                gzipVCF, f'{args.inputs_dir}/{vcf_path}'))
-            updated_vcf_path.append(f'{tmp_dir}/{vcf_path.split("/")[-1]}.gz')
-        else:  # in place
-            updated_vcf_path.append(f'{args.inputs_dir}/{vcf_path}')
-    if len(futures) > 0:
-        wait(futures)
-        del futures
+    for i, rdata in sample_sheet_df.iterrows():
+        futures.append(client.submit(
+            copyVCF, rdata.label, f'{args.inputs_dir}/{rdata.vcf_path}'))
+        updated_vcf_path.append(f'{tmp_dir}/{rdata.label}.vcf.gz')
+    wait(futures)
+    del futures
     sample_sheet_df.loc[:, 'vcf_path'] = updated_vcf_path
-
 
     print(f'Merging data for {len(sample_sheet_df.vcf_path)} samples ({int(timeit.default_timer() - start_time)}s elapsed)....')
     # initialize zarr array tracking miss locations
@@ -293,7 +287,7 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
         default_merge=args.merge_size,
         genome_len=genome_len,
         genome_splits=args.split_genome,
-        tmp_dir=tmp_dir, output_dir=tmp_dir)
+        tmp_dir=tmp_dir, output_dir=args.out_dir)
 
 
     print(f'Editing merged VCF to include miss locations ({int(timeit.default_timer() - start_time)}s elapsed)....')
@@ -329,6 +323,9 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
     for f in as_completed(futures):
         dask_output.append(client.gather(f))
         f.release()
+
+    # delete vcf merge futures
+    del merged_vcfs
 
     print('Shutting down dask workers (no more parallel steps).')
     client.shutdown()
