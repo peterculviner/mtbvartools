@@ -1,8 +1,10 @@
-import pysam, shutil, os, tqdm, dendropy
+import pysam, shutil, os, tqdm, dendropy, shutil
+from pathlib import Path
 from pastml.acr import pastml_pipeline
 import numpy as np
 import pandas as pd
 from time import sleep
+from dask.distributed import fire_and_forget
 from .KeyedByteArray import KeyedByteArray
 from .CallBytestream import CallBytestream
 from .trees import writeLabelledTree
@@ -91,11 +93,11 @@ def writeVariantCalls(target_vcf, output_path, sample_list=None, compression='zl
 
 def writeAncestorCalls(
         vcb_path, tree_path, output_path,
-        step_size=100, method='DOWNPASS', miss_filter=0.80, keep_cols=['num_unresolved_nodes', 'steps'],
-        compression='zlib', ckwargs={}, sub_wait=0.01):
+        step_size=100, method='DOWNPASS', miss_filter=0.80, rechunk_jobs=500):
+    
     # define ancestral reconstruction job
     @subproc
-    def job(job_slices, vcb_path, output_path, method, miss_filter, keep_cols):
+    def acrJob(job_slices, vcb_path, output_path, method, miss_filter):
         tmp_dir = f'{output_path}/AR_TMP_{job_slices[0]}'
         os.makedirs(tmp_dir, exist_ok=True)
         with CallBytestream(vcb_path, init_nodes=False) as target_vcb:
@@ -110,7 +112,8 @@ def writeAncestorCalls(
             data=input_calls[pass_filter],
             index=var_idxs,
             columns=input_cols,
-            dtype=str).replace('2', '').T
+            dtype=str).T
+        input_df.values[input_df == '2'] = ''  # replace '2' with pastml missing character ''
         # input_df.index.name = 'ID'
         input_df.to_csv(f'{tmp_dir}/input_calls.csv')
         pastml_pipeline(  # run pastml
@@ -136,7 +139,7 @@ def writeAncestorCalls(
                 node_states_df.columns[np.all(np.isnan(node_states_df.loc[ambiguous_node]) == False, axis=0)]] = 2
             # update keep mask to remove second
             keep_mask[np.where(node_states_df.index == ambiguous_node)[0][1]] = False
-        node_states_df = node_states_df.loc[keep_mask].T.astype(int)
+        node_states_df = node_states_df.loc[keep_mask].T.astype('uint8')
         # store pastml outputs
         output_df = []
         for i in node_states_df.index:
@@ -144,73 +147,64 @@ def writeAncestorCalls(
                 pd.read_csv(
                     f'{tmp_dir}/params.character_{i}.method_{method}.tab',
                     delimiter='\t', index_col=0).value)
-        output_df = pd.concat(output_df, axis=1).T.loc[:, keep_cols]
+        output_df = pd.concat(output_df, axis=1).T
         output_df.index = var_idxs + job_slices[0]
-        # write a temporary KBA, then read the bytestream and pointers
-        tmp_kba = KeyedByteArray(
-            f'{output_path}/kba{job_slices[0]}.tmp.kba', mode='w', dtype='uint8', columns=node_states_df.columns)
-        for i, data in node_states_df.iterrows():
-            tmp_kba.write(input_rows[i], data.values.astype('uint8'))
-        tmp_kba.close()
-        # read in the bytestream for output
-        tmp_kba = KeyedByteArray(
-            f'{output_path}/kba{job_slices[0]}.tmp.kba')
-        pointers = tmp_kba.row_dict
-        bytestream = tmp_kba.file.read()
-        raw_bytes = tmp_kba.index['compression']['bytes']
-        columns = tmp_kba.col
-        tmp_kba.close()
-        shutil.rmtree(tmp_dir) # remove temporary files
-        os.remove(f'{output_path}/kba{job_slices[0]}.tmp.kba')
-        os.remove(f'{output_path}/kba{job_slices[0]}.tmp.kba.kbi')
-        return columns, output_df, pointers, bytestream, raw_bytes
+        shutil.rmtree(tmp_dir)
+        # prepare outputs
+        row_values = [input_rows[i] for i in np.where(pass_filter)[0]]
+        col_values = node_states_df.columns.values
+        return row_values, col_values, node_states_df.values, output_df.to_csv()
+    
     # prepare directory
     shutil.rmtree(output_path, ignore_errors=True)
     os.makedirs(output_path)
     # prepare client if not already prepared
     client = findClient()
-    # load target vcb to split work
-    with CallBytestream(vcb_path, init_calls=True, init_nodes=False) as target_vcb:
-        job_slices = getSlices(step_size, len(target_vcb.calls.row))
+
     # write the labelled tree
     writeLabelledTree(
         tree_path,
         f'{output_path}/tree.nwk',
         suppress_internal_node_labels=True, suppress_rooting=True)  # req'd for pastml read-in
-    futures = []  # submit futures
+    
+    # load target vcb to initialize work and outputs
+    target_vcb = CallBytestream(vcb_path, init_calls=True, init_nodes=False)
+    job_slices = getSlices(step_size, len(target_vcb.calls.row))
+    variant_keys = target_vcb.calls.row
+    futures = []  # prepare futures
     for i, js in enumerate(job_slices):
         futures.append(client.submit(
-            job, js, vcb_path, output_path,
-            method, miss_filter, keep_cols,
-            priority=len(job_slices)-i))
-        sleep(sub_wait)  # wait between submissions to not overload - default is to submit 100 jobs per second
-    # gather futures and release memory
-    # initialize data array
-    init_columns, _, _, _, _ = client.gather(futures[0])
-    variant_kba = KeyedByteArray(  # initialize output
-        f'{output_path}/by_variant.kba', mode='w', columns=np.asarray(init_columns), dtype='uint8',
-        compression=compression, compression_kwargs=ckwargs)
-    # iterate through futures 
-    pastml_outputs = []
-    for f in tqdm.tqdm(futures):
-        columns, output_df, pointers, bytestream, raw_bytes = client.gather(f)
-        if not np.all(init_columns == columns):  # verify columns are the same
-            raise ValueError('Columns for datasets do not match!')
-        f.release()
-        variant_kba.writebinary(
-            pointers, bytestream, raw_bytes=raw_bytes)
-        pastml_outputs.append(output_df)
-    # finish output df
-    pastml_outputs = pd.concat(pastml_outputs, axis=0)
-    pastml_outputs.index = pd.Index(variant_kba.pointers.keys())
-    pastml_outputs.index.names = ('pos', 'ref', 'alt')
-    variant_kba.close()
-    # rechunk variant_kba
-    variant_kba = KeyedByteArray(f'{output_path}/by_variant.kba', mode='r')
-    variant_kba.rechunk(f'{output_path}/by_node.kba', jobs=50)
-    variant_kba.close()
-    pastml_outputs.to_csv(f'{output_path}/pastml_outputs.csv')
-    return pastml_outputs
+            acrJob, js, vcb_path, output_path,
+            method, miss_filter, priority=len(job_slices)-i))
+        sleep(0.001)
+    with open(f'{output_path}/acr_summary.csv', 'w') as summary_file:
+        # handle first future
+        rows, columns, node_states, summary_csv = futures[0].result()
+        summary_file.write(summary_csv)
+        output_kba = KeyedByteArray(  # initialize output
+            f'{output_path}/by_variant.kba', mode='w', columns=columns, dtype=target_vcb.calls.dtype,
+            compression=target_vcb.calls.index['compression']['compression_type'],
+            compression_kwargs=target_vcb.calls.index['compression']['kwargs'])
+        for i, key in enumerate(rows):
+            output_kba.write(key, node_states[i])
+        futures[0].release()
+
+        # gather outputs as futures complete
+        for f, js in tqdm.tqdm(zip(futures[1:], job_slices[1:])):
+            rows, col, node_states, summary_csv = f.result()
+            for i, key in enumerate(rows):
+                output_kba.write(key, node_states[i])
+            summary_file.write(
+                summary_csv[summary_csv.find('\n') + 1:])
+            if np.all(columns == col) is False:
+                raise ValueError('columns do not match')
+            f.release()
+
+    output_kba.close()
+    # rechunk output_kba
+    output_kba = KeyedByteArray(f'{output_path}/by_variant.kba', mode='r')
+    output_kba.rechunk(f'{output_path}/by_node.kba', jobs=rechunk_jobs)
+    output_kba.close()
 
 
 def writeEventTransitions(ancestor_calls, output_path, tree_obj):

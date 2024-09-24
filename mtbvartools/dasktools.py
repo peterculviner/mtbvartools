@@ -53,7 +53,10 @@ def startClient(
         raise ValueError('Choose exactly 1 of {use_local, use_slurm}.')
     if use_local:
         print(f'{ts} - Launching LocalCluster client ({n_workers} workers)')
-        return LocalCluster(n_workers=n_workers, threads_per_worker=1).get_client()
+        return LocalCluster(
+            n_workers=n_workers,
+            threads_per_worker=1,
+            dashboard_address=dashboard_address).get_client()
     if use_slurm:
         # prepare outfile directory
         outfile_dir = f'{log_dir}/' + datetime.now().strftime('outfiles_%y%m%d_%Hh%Mm%Ss')
