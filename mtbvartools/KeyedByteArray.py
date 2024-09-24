@@ -1,4 +1,4 @@
-import zlib, os, pickle, tqdm
+import zlib, os, pickle, tqdm, numbers
 from collections.abc import Iterable
 import numpy as np
 from .dasktools import findClient
@@ -11,7 +11,7 @@ class _iLocKeyedByteArray:
 
     def __getitem__(self, index):
         def parseItem(index):
-            if isinstance(index, int):
+            if isinstance(index, numbers.Integral):
                 return self.kba.read(self.kba.row[index])
             elif isinstance(index, slice):
                 start = index.start
@@ -70,6 +70,24 @@ class KeyedByteArray():
             self.bytes_written += array_len
         else:
             raise ValueError(f'Function not supported for mode: {self.file.mode}.')
+    
+    def subset(self, new_path, mask=None, index=None):
+        if (mask is None and index is None) or (mask is not None and index is not None):
+            raise ValueError('Define exactly one of mask and index.')
+        # initialize new KBA
+        new_kba = KeyedByteArray(
+                new_path, mode='w', columns=self.col, dtype=self.dtype,
+                compression=self.index['compression']['compression_type'],
+                compression_kwargs=self.index['compression']['kwargs'])
+        if mask is not None:  # write by mask positions
+            if mask.dtype != bool or len(mask.shape) != 1:
+                raise ValueError('Mask should be a 1D bool numpy array')
+            for i in np.where(mask == True)[0]:
+                new_kba.write(self.row[i], self.iloc[i])
+        elif index is not None:  # write by explicit keys
+            for key in index:
+                new_kba.write(key, self.loc[key])
+        new_kba.close()
 
     @property
     def iloc(self):

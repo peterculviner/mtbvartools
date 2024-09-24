@@ -2,6 +2,7 @@ import pysam, shutil, os, tqdm, dendropy
 from pastml.acr import pastml_pipeline
 import numpy as np
 import pandas as pd
+from time import sleep
 from .KeyedByteArray import KeyedByteArray
 from .CallBytestream import CallBytestream
 from .trees import writeLabelledTree
@@ -91,7 +92,7 @@ def writeVariantCalls(target_vcf, output_path, sample_list=None, compression='zl
 def writeAncestorCalls(
         vcb_path, tree_path, output_path,
         step_size=100, method='DOWNPASS', miss_filter=0.80, keep_cols=['num_unresolved_nodes', 'steps'],
-        compression='zlib', ckwargs={}):
+        compression='zlib', ckwargs={}, sub_wait=0.01):
     # define ancestral reconstruction job
     @subproc
     def job(job_slices, vcb_path, output_path, method, miss_filter, keep_cols):
@@ -182,7 +183,7 @@ def writeAncestorCalls(
             job, js, vcb_path, output_path,
             method, miss_filter, keep_cols,
             priority=len(job_slices)-i))
-    # return futures
+        sleep(sub_wait)  # wait between submissions to not overload - default is to submit 100 jobs per second
     # gather futures and release memory
     # initialize data array
     init_columns, _, _, _, _ = client.gather(futures[0])
