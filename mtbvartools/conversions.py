@@ -100,12 +100,15 @@ def writeAncestorCalls(
     def acrJob(job_slices, vcb_path, output_path, method, miss_filter):
         tmp_dir = f'{output_path}/AR_TMP_{job_slices[0]}'
         os.makedirs(tmp_dir, exist_ok=True)
-        with CallBytestream(vcb_path, init_nodes=False) as target_vcb:
-            input_calls = target_vcb.calls.iloc[job_slices[0]:job_slices[1]]
-            input_rows = target_vcb.calls.row[job_slices[0]:job_slices[1]]
-            input_cols = target_vcb.calls.col
+        # open call byestream to access data
+        target_vcb = CallBytestream(vcb_path, init_nodes=False)
+        input_calls = target_vcb.calls.iloc[job_slices[0]:job_slices[1]]
+        input_rows = target_vcb.calls.row[job_slices[0]:job_slices[1]]
+        input_cols = target_vcb.calls.col
         pass_filter = np.sum(  # remove rows with too many misses
             input_calls == 2, axis=1) / len(input_cols) <= miss_filter
+        if np.all(pass_filter == False):  # none of the sites passed filter
+            return None
         # define variant labels
         var_idxs = np.arange(len(input_rows))[pass_filter]
         input_df = pd.DataFrame(  # define dataframe and write to CSV
@@ -139,7 +142,7 @@ def writeAncestorCalls(
                 node_states_df.columns[np.all(np.isnan(node_states_df.loc[ambiguous_node]) == False, axis=0)]] = 2
             # update keep mask to remove second
             keep_mask[np.where(node_states_df.index == ambiguous_node)[0][1]] = False
-        node_states_df = node_states_df.loc[keep_mask].T.astype('uint8')
+        node_states_df = node_states_df.loc[keep_mask].T.astype(target_vcb.calls.dtype)
         # store pastml outputs
         output_df = []
         for i in node_states_df.index:
@@ -151,9 +154,12 @@ def writeAncestorCalls(
         output_df.index = var_idxs + job_slices[0]
         shutil.rmtree(tmp_dir)
         # prepare outputs
-        row_values = [input_rows[i] for i in np.where(pass_filter)[0]]
+        pointers, compressed_bytes, raw_byte_count = target_vcb.calls.preparebinary(
+            [input_rows[i] for i in np.where(pass_filter)[0]],
+            node_states_df.values)
         col_values = node_states_df.columns.values
-        return row_values, col_values, node_states_df.values, output_df.to_csv()
+        target_vcb.close()
+        return col_values, output_df.to_csv(), pointers, compressed_bytes, raw_byte_count
     
     # prepare directory
     shutil.rmtree(output_path, ignore_errors=True)
@@ -170,7 +176,6 @@ def writeAncestorCalls(
     # load target vcb to initialize work and outputs
     target_vcb = CallBytestream(vcb_path, init_calls=True, init_nodes=False)
     job_slices = getSlices(step_size, len(target_vcb.calls.row))
-    variant_keys = target_vcb.calls.row
     futures = []  # prepare futures
     for i, js in enumerate(job_slices):
         futures.append(client.submit(
@@ -179,27 +184,30 @@ def writeAncestorCalls(
         sleep(0.001)
     with open(f'{output_path}/acr_summary.csv', 'w') as summary_file:
         # handle first future
-        rows, columns, node_states, summary_csv = futures[0].result()
+        first_columns, summary_csv, pointers, compressed_bytes, raw_byte_count = futures[0].result()
         summary_file.write(summary_csv)
         output_kba = KeyedByteArray(  # initialize output
-            f'{output_path}/by_variant.kba', mode='w', columns=columns, dtype=target_vcb.calls.dtype,
+            f'{output_path}/by_variant.kba', mode='w', columns=first_columns, dtype=target_vcb.calls.dtype,
             compression=target_vcb.calls.index['compression']['compression_type'],
             compression_kwargs=target_vcb.calls.index['compression']['kwargs'])
-        for i, key in enumerate(rows):
-            output_kba.write(key, node_states[i])
+        # write the pre-compressed data
+        output_kba.writebinary(pointers, compressed_bytes, raw_byte_count)
         futures[0].release()
 
         # gather outputs as futures complete
-        for f, js in tqdm.tqdm(zip(futures[1:], job_slices[1:])):
-            rows, col, node_states, summary_csv = f.result()
-            for i, key in enumerate(rows):
-                output_kba.write(key, node_states[i])
+        for f in tqdm.tqdm(futures[1:]):
+            results = f.result()
+            if results is None:  # handle situation with all missing results
+                continue
+            columns, summary_csv, pointers, compressed_bytes, raw_byte_count = results
+            # write the pre-compressed data
+            output_kba.writebinary(pointers, compressed_bytes, raw_byte_count)
+            # append to the summary file
             summary_file.write(
                 summary_csv[summary_csv.find('\n') + 1:])
-            if np.all(columns == col) is False:
+            if np.any(first_columns == columns) is False:
                 raise ValueError('columns do not match')
             f.release()
-
     output_kba.close()
     # rechunk output_kba
     output_kba = KeyedByteArray(f'{output_path}/by_variant.kba', mode='r')

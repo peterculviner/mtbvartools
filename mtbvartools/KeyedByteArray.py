@@ -70,6 +70,23 @@ class KeyedByteArray():
             self.bytes_written += array_len
         else:
             raise ValueError(f'Function not supported for mode: {self.file.mode}.')
+        
+    def preparebinary(self, keys, values):
+        raw_byte_count = 0
+        pointer_i = 0
+        bytestream = b''
+        pointers = {}
+        for key, value in zip(keys, values):
+             # save bytestream info
+            uncompressed_bytes = bytearray(value)
+            compressed_bytes = self.compress(uncompressed_bytes, **self.compress_kwargs)
+            bytestream += compressed_bytes
+            # save pointers
+            pointers[key] = (pointer_i, len(compressed_bytes))
+            # tick forward counters
+            raw_byte_count += len(uncompressed_bytes)
+            pointer_i += len(compressed_bytes)
+        return pointers, bytestream, raw_byte_count
     
     def subset(self, new_path, mask=None, index=None):
         if (mask is None and index is None) or (mask is not None and index is not None):
