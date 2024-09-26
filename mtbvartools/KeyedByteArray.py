@@ -1,7 +1,7 @@
 import zlib, os, pickle, tqdm, numbers
 from collections.abc import Iterable
 import numpy as np
-from .dasktools import findClient
+from .dasktools import findClient, subproc
 
 # Require Python Version >= 3.7 for ordered dictionaries
 
@@ -135,26 +135,24 @@ class KeyedByteArray():
 
     def rechunk(self, output_path, jobs=100):
         # define job
+        @subproc
         def rechunkJob(origin_path, tmp_path, col_idxs):
-            # open origin and tmp kba
+            # open origin kba
             origin_kba = KeyedByteArray(origin_path, mode='r')
-            new_rows = origin_kba.col[col_idxs[0]:col_idxs[1]]
-            tmp_kba = KeyedByteArray(
-                tmp_path, mode='w', dtype=origin_kba.dtype, columns=origin_kba.row,
-                compression=origin_kba.index['compression']['compression_type'],
-                compression_kwargs=origin_kba.index['compression']['kwargs'])
-            # store part of the full array uncompressed in memory
+            new_rows = origin_kba.col[  # new rows are origin columns
+                col_idxs[0]:col_idxs[1]]
+            # write to tmp numpy array in memory
             tmp_arr = np.empty(
                 shape=(len(origin_kba.row), len(new_rows)),
                 dtype=origin_kba.dtype)
             for i, row_key in enumerate(origin_kba.row):
                 tmp_arr[i, :] = origin_kba.read(row_key)[col_idxs[0]:col_idxs[1]]
+            # compress and output bytes
+            pointers, compressed_bytes, raw_byte_count = origin_kba.preparebinary(
+                new_rows, tmp_arr.T)
             origin_kba.close()
-            # write to the tmp kba
-            for i, row in enumerate(new_rows):
-                tmp_kba.write(row, tmp_arr[:, i])
-            tmp_kba.close()
-            return tmp_path
+            return pointers, compressed_bytes, raw_byte_count
+        
         # prepare to do jobs
         client = findClient()
         job_idxs = list(zip(
@@ -174,15 +172,10 @@ class KeyedByteArray():
                 compression=self.index['compression']['compression_type'],
                 compression_kwargs=self.index['compression']['kwargs'])
         for f in tqdm.tqdm(futures):
-            tmp_path = client.gather(f)
-            tmp_kba = KeyedByteArray(  # read entire stream into memory
-                tmp_path, mode='r', mem=True)
+            pointers, compressed_bytes, raw_byte_count = client.gather(f)
             output_kba.writebinary(
-                tmp_kba.row_dict, tmp_kba.stream, raw_bytes=tmp_kba.index['compression']['bytes'])
-            tmp_kba.close()
-            client.cancel(f)
-            del tmp_kba
-            os.remove(tmp_path), os.remove(f'{tmp_path}.kbi')
+                pointers, compressed_bytes, raw_bytes=raw_byte_count)
+            f.release()
         output_kba.close()
 
     def _checkKey(self, key):
