@@ -4,7 +4,7 @@ from pastml.acr import pastml_pipeline
 import numpy as np
 import pandas as pd
 from time import sleep
-from dask.distributed import fire_and_forget
+from dask.distributed import TimeoutError
 from .KeyedByteArray import KeyedByteArray
 from .CallBytestream import CallBytestream
 from .trees import writeLabelledTree
@@ -93,7 +93,7 @@ def writeVariantCalls(target_vcf, output_path, sample_list=None, compression='zl
 
 def writeAncestorCalls(
         vcb_path, tree_path, output_path,
-        step_size=100, method='DOWNPASS', miss_filter=0.80, rechunk_jobs=500):
+        step_size=100, method='DOWNPASS', miss_filter=0.50, rechunk_jobs=500, timeout=1200):
     
     # define ancestral reconstruction job
     @subproc
@@ -195,8 +195,13 @@ def writeAncestorCalls(
         futures[0].release()
 
         # gather outputs as futures complete
-        for f in tqdm.tqdm(futures[1:]):
-            results = f.result()
+        for js, f in tqdm.tqdm(list(zip(job_slices[1:], futures[1:]))):
+            try:
+                results = f.result(timeout=timeout)
+            except TimeoutError:
+                print(f'Timeout at {js} proceeding without future.')
+                f.release()
+                continue
             if results is None:  # handle situation with all missing results
                 continue
             columns, summary_csv, pointers, compressed_bytes, raw_byte_count = results
