@@ -142,3 +142,10 @@ def fetchGeneVariantAnnotations(target_vcf, geneid, start, stop):
         gene_annotation_data, axis=1).T
     # return
     return gene_annotation_data
+
+
+def filterDataFrame(input_dataframe, function_dict=None):
+    # iterate through variants to check if match dictionary function
+    filter_results = [
+        input_dataframe.loc[:, col].map(function) for col, function in function_dict.items()]
+    return input_dataframe.loc[np.any(filter_results, axis=0)]

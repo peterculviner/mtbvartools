@@ -88,24 +88,26 @@ def getMeanNodeTip(ancestor_path, tree_path, remove_mask):
     return mean_node_tip_internal
 
 
-def getMeanTerminalBranchLengths(ancestor_path, tree_path, remove_mask, allow_leaves=True):
+def getMeanTerminalBranchLengths(ancestor_path, tree_path, remove_mask):
     tree = loadTree(tree_path)
-    # mean terminal branch length
-    mean_terminal_branch_length = {}
+    # precalculate terminal branch lengths
+    print('precalculating leaf tbls....')
     with vt.CallBytestream(ancestor_path, init_calls=False, init_nodes=True) as ancestor_calls:
-        # decide if should call 
-        if allow_leaves:
-            node_iter = tree.postorder_node_iter()
-        else:
-            node_iter = tree.postorder_internal_node_iter()
-        for node in tqdm(list(node_iter)):
-            leaf_node_tbls = []
-            for ln in node.leaf_nodes():
-                leaf_node_tbls.append(
-                    getVariantDistance(ancestor_calls, ln.parent_node.label, ln.label, remove_mask))
-            mean_terminal_branch_length[node.label] = np.mean(
-                leaf_node_tbls)
-    return mean_terminal_branch_length
+        leaf_tbl = {}
+        for ln in tqdm(tree.leaf_nodes()):
+            leaf_tbl[ln.label] = getVariantDistance(ancestor_calls, ln.parent_node.label, ln.label, remove_mask)
+    print('calculating all mean tbls...')
+    mean_terminal_branch_length = {}
+    terminal_branch_count = {}
+    for node in tqdm(list(tree.postorder_node_iter())):
+        # leaf node lookup for parent node
+        node_tbls = []
+        for ln in node.leaf_nodes():
+            node_tbls.append(leaf_tbl[ln.label])
+        # calculate mean, count
+        mean_terminal_branch_length[node.label] = np.mean(node_tbls)
+        terminal_branch_count[node.label] = len(node_tbls)
+    return mean_terminal_branch_length, terminal_branch_count
 
 
 def getDescendantsPerTime(ancestor_path, tree_path, remove_mask, pseudocount=1):
@@ -114,9 +116,16 @@ def getDescendantsPerTime(ancestor_path, tree_path, remove_mask, pseudocount=1):
     descendants_per_time = {}
     with vt.CallBytestream(ancestor_path, init_calls=False, init_nodes=True) as ancestor_calls:
         for node in tqdm(list(tree.postorder_internal_node_iter())):
-            leaf_distances = [  # calculate variant distances (~= time) to leaf nodes
-                getVariantDistance(ancestor_calls, node.label, leaf_node.label, remove_mask)
-                for leaf_node in node.leaf_nodes()]
+            node_calls = ancestor_calls.nodes.loc[node.label]
+            leaf_distances = []
+            for leaf in node.leaf_nodes():
+                leaf_calls = ancestor_calls.nodes.loc[leaf.label]
+                distance = np.all([
+                    node_calls != leaf_calls,
+                    node_calls != 2,
+                    leaf_calls != 2,
+                    remove_mask != True], axis=0).sum()
+                leaf_distances.append(distance)
             descendants_per_time[node.label] = len(leaf_distances) / (np.mean(leaf_distances) + pseudocount)
     return descendants_per_time
 
@@ -180,7 +189,10 @@ def getChildClusterFraction(tree_path, cluster_dict):
                 # identify leaves that fall within a cluster
                 clustered_leaves = []
                 for cluster_node in cluster_child_nodes:
-                    clustered_leaves += [ln.label for ln in tree.find_node_with_label(cluster_node).leaf_nodes()]
+                    clustered_leaves += list(cluster_dict[cluster_node])
+                # verify no double counts
+                if len(clustered_leaves) != len(np.unique(clustered_leaves)):
+                    raise ValueError('Overlapping clusters found, this will break calculation assumptions!')
                 # compare to total number of child leaves
                 clustered_fraction[target_node.label] = len(clustered_leaves) / len(target_node.leaf_nodes())
     return clustered_fraction

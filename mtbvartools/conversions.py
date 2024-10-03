@@ -220,7 +220,8 @@ def writeAncestorCalls(
     output_kba.close()
 
 
-def writeEventTransitions(ancestor_calls, output_path, tree_obj):
+def writeEventTransitions(ancestor_calls, output_path, tree_obj, rechunk=True):
+    os.makedirs(output_path, exist_ok=True)
     by_node_kba = KeyedByteArray(
         f'{output_path}/by_node.kba', mode='w', columns=ancestor_calls.nodes.col, dtype='uint8',
         compression=ancestor_calls.nodes.index['compression']['compression_type'],
@@ -248,11 +249,12 @@ def writeEventTransitions(ancestor_calls, output_path, tree_obj):
             output_vector[ttr_mask] = 2  # transition to REF is 2
             by_node_kba.write(cnode.label, output_vector)
     by_node_kba.close()
-    # reopen and rechunk to complete vcb file
-    by_node_kba = KeyedByteArray(
-        f'{output_path}/by_node.kba', mode='r')
-    by_node_kba.rechunk(f'{output_path}/by_variant.kba')
-    by_node_kba.close()
+    if rechunk:
+        # reopen and rechunk to complete vcb file
+        by_node_kba = KeyedByteArray(
+            f'{output_path}/by_node.kba', mode='r')
+        by_node_kba.rechunk(f'{output_path}/by_variant.kba')
+        by_node_kba.close()
     return transitions_to_ref, transitions_to_alt
 
 
