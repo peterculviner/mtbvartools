@@ -27,6 +27,39 @@ def subproc(func):
             return output
     return wrapper
 
+
+def timedsubproc(timeout):
+    """
+    Launches a python function as a separate process. Use as a decorator for jobs or functions that cause memory leaks.
+    Requires provision of a time in seconds for timeout. Will kill subproc and issue TimeoutError at timeout.
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            in_subproc = kwargs.pop('_subproc', False)
+            queue = kwargs.pop('_queue', None)
+            if in_subproc:  # run function, push results to queue
+                output = func(*args, **kwargs)
+                queue.put(output)
+            else:  # spawn subprocess
+                queue = mp.Queue()
+                process = mp.Process(  # pass queue and this function
+                    target=wrapper, args=args, kwargs={'_subproc': True, '_queue': queue, **kwargs})
+                process.start()
+                process.join(timeout=timeout)
+                if process.is_alive():  # waited for process to complete, terminating instead
+                    process.terminate()
+                    process.join()
+                    process.close()
+                    raise TimeoutError(f'timeout expired at {timeout}')
+                else:
+                    output = queue.get()
+                    process.close()
+                    return output
+        return wrapper
+    return decorator
+
+
 def findClient(n_workers=None, threads_per_worker=1, **kwargs):
     try:
         get_client()

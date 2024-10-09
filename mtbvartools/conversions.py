@@ -8,10 +8,16 @@ from dask.distributed import TimeoutError
 from .KeyedByteArray import KeyedByteArray
 from .CallBytestream import CallBytestream
 from .trees import writeLabelledTree
-from .dasktools import subproc, findClient
+from .dasktools import subproc, timedsubproc, findClient
 from .misc import getSlices
 
-def writeVariantCalls(target_vcf, output_path, sample_list=None, compression='zlib', ckwargs={}, n_jobs=(1000, 50)):
+def writeVariantCalls(
+        target_vcf, output_path,
+        sample_list=None, compression='zlib', ckwargs={}, n_jobs=(1000, 50),
+        output_lookup={
+            (0, 0): 0,
+            (1, 1): 1, (0, 1): 1, (1, 0): 1,
+            (None, None): 2}):
     # define single job
     def job(target_vcf, sample_list, region_start, region_end, cfunc, ckwargs):
         if sample_list == None:  # if none provided, write all samples in VCF order; otherwise iterate across sample list
@@ -30,16 +36,12 @@ def writeVariantCalls(target_vcf, output_path, sample_list=None, compression='zl
             if record.pos >= region_start and record.pos <= region_end:
                 record_calls = np.zeros(len(sample_list), dtype='uint8')
                 for i, name in enumerate(sample_list):
-                    sample_call = record.samples[name]['GT']
-                    if sample_call == (0, 0):
-                        continue  # default is ref (0), no need to change
-                    elif sample_call == (1, 1):
-                        record_calls[i] = 1  # alt is saved as 1
-                    elif sample_call == (None, None):
-                        record_calls[i] = 2  # miss is saved as 2
-                    else:
-                        raise ValueError(
-                            f'Unhandled call, for {name} at {record}')
+                    try:
+                        sample_call = record.samples[name]['GT']
+                        record_calls[i] = output_lookup[sample_call]
+                    except KeyError:
+                        raise KeyError(
+                            f'Unhandled call: {sample_call}, for {name} at {record}.')
                 # save bytestream info
                 uncompressed_bytes = bytearray(record_calls)
                 compressed_bytes = cfunc(uncompressed_bytes, **ckwargs)
@@ -93,12 +95,28 @@ def writeVariantCalls(target_vcf, output_path, sample_list=None, compression='zl
 
 def writeAncestorCalls(
         vcb_path, tree_path, output_path,
-        step_size=100, method='DOWNPASS', miss_filter=0.50, rechunk_jobs=500, timeout=1200):
+        step_size=100, method='DOWNPASS', miss_filter=0.50, rechunk_jobs=None, timeout=None):
+
+    def acrJobHandler(job_slices, vcb_path, output_path, method, miss_filter):
+        # try with a timeout
+        try:
+            ## TIMEOUT FUNCTION
+            return [acrJob(job_slices, vcb_path, output_path, method, miss_filter)]
+        except TimeoutError:
+            singlet_output = []
+            for left in range(job_slices[0], job_slices[1]):
+                try:
+                    singlet_output.append(
+                        acrJob((left, left + 1), vcb_path, output_path, method, miss_filter))
+                except TimeoutError:
+                    singlet_output.append(
+                        RuntimeWarning(f'Handled timeout at index {left}'))
+            return singlet_output
     
     # define ancestral reconstruction job
-    @subproc
+    @timedsubproc(timeout)
     def acrJob(job_slices, vcb_path, output_path, method, miss_filter):
-        tmp_dir = f'{output_path}/AR_TMP_{job_slices[0]}'
+        tmp_dir = f'{output_path}/AR_TMP_{job_slices[0]}_{job_slices[1]}'
         os.makedirs(tmp_dir, exist_ok=True)
         # open call byestream to access data
         target_vcb = CallBytestream(vcb_path, init_nodes=False)
@@ -108,6 +126,7 @@ def writeAncestorCalls(
         pass_filter = np.sum(  # remove rows with too many misses
             input_calls == 2, axis=1) / len(input_cols) <= miss_filter
         if np.all(pass_filter == False):  # none of the sites passed filter
+            shutil.rmtree(tmp_dir)
             return None
         # define variant labels
         var_idxs = np.arange(len(input_rows))[pass_filter]
@@ -179,7 +198,7 @@ def writeAncestorCalls(
     futures = []  # prepare futures
     for i, js in enumerate(job_slices):
         futures.append(client.submit(
-            acrJob, js, vcb_path, output_path,
+            acrJobHandler, js, vcb_path, output_path,
             method, miss_filter, priority=len(job_slices)-i))
         sleep(0.001)
     with open(f'{output_path}/acr_summary.csv', 'w') as summary_file:
@@ -193,31 +212,30 @@ def writeAncestorCalls(
         # write the pre-compressed data
         output_kba.writebinary(pointers, compressed_bytes, raw_byte_count)
         futures[0].release()
-
         # gather outputs as futures complete
         for js, f in tqdm.tqdm(list(zip(job_slices[1:], futures[1:]))):
-            try:
-                results = f.result(timeout=timeout)
-            except TimeoutError:
-                print(f'Timeout at {js} proceeding without future.')
-                f.release()
-                continue
-            if results is None:  # handle situation with all missing results
-                continue
-            columns, summary_csv, pointers, compressed_bytes, raw_byte_count = results
-            # write the pre-compressed data
-            output_kba.writebinary(pointers, compressed_bytes, raw_byte_count)
-            # append to the summary file
-            summary_file.write(
-                summary_csv[summary_csv.find('\n') + 1:])
-            if np.any(first_columns == columns) is False:
-                raise ValueError('columns do not match')
+            results = f.result()  # handle list of results in future
+            for r in results:
+                if r is None:  # handle situation with all missing results
+                    continue
+                elif isinstance(r, Exception):
+                    print(r)
+                else:
+                    columns, summary_csv, pointers, compressed_bytes, raw_byte_count = r
+                    # write the pre-compressed data
+                    output_kba.writebinary(pointers, compressed_bytes, raw_byte_count)
+                    # append to the summary file
+                    summary_file.write(
+                        summary_csv[summary_csv.find('\n') + 1:])
+                    if np.any(first_columns == columns) is False:
+                        raise ValueError('columns do not match')
             f.release()
     output_kba.close()
-    # rechunk output_kba
-    output_kba = KeyedByteArray(f'{output_path}/by_variant.kba', mode='r')
-    output_kba.rechunk(f'{output_path}/by_node.kba', jobs=rechunk_jobs)
-    output_kba.close()
+    if rechunk_jobs != None:
+        # rechunk output_kba
+        output_kba = KeyedByteArray(f'{output_path}/by_variant.kba', mode='r')
+        output_kba.rechunk(f'{output_path}/by_node.kba', jobs=rechunk_jobs)
+        output_kba.close()
 
 
 def writeEventTransitions(ancestor_calls, output_path, tree_obj, rechunk=True):
