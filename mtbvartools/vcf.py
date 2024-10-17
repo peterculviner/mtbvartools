@@ -11,6 +11,17 @@ def bedToMask(path, genome_length):
     return mask
 
 
+def maskToBed(mask, path, chromosome_name):
+    indexes = np.where(mask[1:] != mask[:-1])[0] + 1
+    if mask[0] == True:
+        indexes = np.concatenate([[0], indexes])
+    if mask[-1] == True:
+        indexes = np.concatenate([indexes, [len(mask)]])
+    with open(path, 'w') as f:
+        for left, right in indexes.reshape((-1, 2)):
+            f.write(f'{chromosome_name}\t{left}\t{right}\n')
+
+
 def SNPEffToSeries(
         record,
         annotation_fields=['Annotation', 'Gene_ID', 'HGVS.c', 'cDNA.pos', 'HGVS.p', 'CDS.pos']):
