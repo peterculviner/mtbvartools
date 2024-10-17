@@ -46,8 +46,11 @@ parser = argparse.ArgumentParser(
 
 # INPUTS
 parser.add_argument(
-    '--sra', type=str, required=True, 
+    '--sra', type=str, required=False, default='nan',
     help='SRA accession number.')
+parser.add_argument(
+    '--fastq-path', type=str, required=False, default='nan',
+    help='FASTQ file(s), comma separated if paired (alternative to SRA accession number).')
 parser.add_argument(
     '--genbank', type=str, required=True, 
     help='Complete path to genbank reference.')
@@ -134,16 +137,19 @@ try:  # global error handling
         args.fasta).lengths[0]
     ####
 
-
-    #### SRA DOWNLOAD ####
-    sw.start('sra_download.py', f'{results_dir}/times.txt')
-    cmd = f'\
-        sra_download.py \
-        --sra {args.sra} {common_args}'
-    vt.contShell(cmd)
-    sw.end('sra_download.py', f'{results_dir}/times.txt')
-    results_df = mergeResults(  # get results
-        results_df, f'{args.dir}/{args.output}/sra_download/{args.output}.results.csv')
+    
+    #### SRA DOWNLOAD / FASTQ HANDLING ####
+    if str(args.sra) != 'nan':
+        sw.start('sra_download.py', f'{results_dir}/times.txt')
+        cmd = f'\
+            sra_download.py \
+            --sra {args.sra} {common_args}'
+        vt.contShell(cmd)
+        sw.end('sra_download.py', f'{results_dir}/times.txt')
+        results_df = mergeResults(  # get results
+            results_df, f'{args.dir}/{args.output}/sra_download/{args.output}.results.csv')
+    elif str(args.fastq_path) == 'nan':
+        raise ValueError('Either --sra or --fastq-path must be defined.')
     ## move key files
     ## decide to proceed or stop
     ####
@@ -151,11 +157,18 @@ try:  # global error handling
 
     #### DOWNSAMPLE FASTQ ####
     sw.start('downsample_fastq.py', f'{results_dir}/times.txt')
-    cmd = f'\
-        downsample_fastq.py \
-        --in-fastq {args.dir}/{args.output}/sra_download/{args.output} \
-        --reference-length {ref_len} --target-depth {args.target_depth} \
-        {common_args}'
+    if str(args.sra) != 'nan':
+        cmd = f'\
+            downsample_fastq.py \
+            --in-stub {args.dir}/{args.output}/sra_download/{args.output} \
+            --reference-length {ref_len} --target-depth {args.target_depth} \
+            {common_args}'
+    else:
+        cmd = f'\
+            downsample_fastq.py \
+            --in-fastq {args.fastq_path} \
+            --reference-length {ref_len} --target-depth {args.target_depth} \
+            {common_args}'
     vt.contShell(cmd)
     sw.end('downsample_fastq.py', f'{results_dir}/times.txt')
     results_df = mergeResults(  # get results
