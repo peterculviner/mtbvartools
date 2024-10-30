@@ -98,6 +98,9 @@ parser.add_argument(
 parser.add_argument(
     '--lineage-snp-count', type=float, default=5,
     help='number of tbprofiler snps required to define a lineage')
+parser.add_argument(
+    '--tbprofiler-fastq',
+    action='store_true', help='run tbprofiler on fastq files instead of bwa output')
 
 
 args = parser.parse_args()
@@ -224,12 +227,20 @@ try:  # global error handling
 
     #### TBPROFILER ####
     sw.start('tb_profiler.py', f'{results_dir}/times.txt')
-    cmd = f'\
-        tb_profiler.py \
-        --in-bam {args.dir}/{args.output}/bwa_map/{args.output}.bam \
-        --lineage-snp-threshold {args.lineage_snp_threshold} \
-        --lineage-snp-count {args.lineage_snp_count} \
-        --threads {args.threads} {common_args}'
+    if args.tbprofiler_fastq:
+        cmd = f'\
+            tb_profiler.py \
+            --in-fastq {args.dir}/{args.output}/fastp_trimming/{args.output} \
+            --lineage-snp-threshold {args.lineage_snp_threshold} \
+            --lineage-snp-count {args.lineage_snp_count} \
+            --threads {args.threads} {common_args}'
+    else:
+        cmd = f'\
+            tb_profiler.py \
+            --in-bam {args.dir}/{args.output}/bwa_map/{args.output}.bam \
+            --lineage-snp-threshold {args.lineage_snp_threshold} \
+            --lineage-snp-count {args.lineage_snp_count} \
+            --threads {args.threads} {common_args}'
     vt.contShell(cmd)
     sw.end('tb_profiler.py', f'{results_dir}/times.txt')
     results_df = mergeResults(  # get results

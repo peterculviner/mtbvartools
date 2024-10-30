@@ -240,9 +240,18 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
         ], axis=0)
     print(
         f'{passing_output_mask.sum()} sites passing miss and BED masks were variant in at least {args.min_strain_count} sample(s) and will be in output.')
-    results_dict['passing_invariant_sites'] = passing_invariant_mask.sum()
     results_dict['passing_variant_sites'] = passing_variant_mask.sum()
     results_dict['passing_output_sites'] = passing_output_mask.sum()
+    results_dict['passing_invariant_sites'] = passing_invariant_mask.sum()
+    # categorize invariant sites by base
+    fasta_file = pysam.FastaFile(
+        args.input_fasta)
+    invariant_array = np.asarray(
+        [bp for bp in fasta_file.fetch(fasta_file.references[0])])[passing_invariant_mask]
+    results_dict['invariant_A'] = np.sum(invariant_array == 'A')
+    results_dict['invariant_T'] = np.sum(invariant_array == 'T')
+    results_dict['invariant_G'] = np.sum(invariant_array == 'G')
+    results_dict['invariant_C'] = np.sum(invariant_array == 'C')
 
     print('Writing filtered fasta outputs....')
     # WRITE OUTPUT AND RECORD MASK

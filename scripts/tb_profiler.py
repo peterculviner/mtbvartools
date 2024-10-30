@@ -155,8 +155,11 @@ parser = argparse.ArgumentParser(
     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
 parser.add_argument(
-    '-i', '--in-bam', type=str, required=True, 
+    '--in-bam', type=str, required=False, default='None',
     help='Complete path to bam file.')
+parser.add_argument(
+    '--in-fastq', type=str, required=False, default='None',
+    help='Path to fastq stubs.')
 parser.add_argument(
     '-o', '--output', type=str, required=True, help='output file handle')
 parser.add_argument(
@@ -178,10 +181,6 @@ parser.add_argument(
 
 args, _ = parser.parse_known_args()
 
-# check if files exist
-if not os.path.exists(args.in_bam):
-    raise ValueError(f'BAM file {args.in_bam} not found.')
-
 tmp_dir = f'{args.tmp_path}/tb_profiler'
 os.makedirs(tmp_dir, exist_ok=True)
 base_dir = f'{args.dir}/{args.output}/tb_profiler'
@@ -194,22 +193,55 @@ if not args.overwrite and os.path.exists(f'{base_dir}/{args.output}.results.csv'
 
 # run TBProfiler
 print('\nRunning TBProfiler for lineage calling....')
-# write a fresh bam file with "Chromosome" as reference name (required for proper execution of tb-profiler)
-cmd = f"\
-    samtools view -h {args.in_bam} | sed 's/NC_000962\.3/Chromosome/g' | samtools view -b -o {tmp_dir}/{args.output}.bam"
-vt.contShell(cmd)
-# copy tb-profiler database to a temporary folder to prevent file access traffic jams
+ # copy tb-profiler database to a temporary folder to prevent file access traffic jams
 os.makedirs(f'{tmp_dir}/database', exist_ok=True)
 cmd = f'\
     db=$(tb-profiler list_db | cut -f5); cp $db* {tmp_dir}/database'
 vt.contShell(cmd)
-# run tb-profiler, save results file
-cmd = f'\
-    cd {tmp_dir} && tb-profiler profile --threads {args.threads} --external_db database/tbdb --bam {args.output}.bam --no_delly 2>&1'
-vt.contShell(cmd)
-cmd = f'\
-    mv {tmp_dir}/results/tbprofiler.results.json {base_dir}/{args.output}.tbprofiler.json'
-vt.contShell(cmd)
+if args.in_bam != 'None':
+    print(f'running on BWA output {args.in_bam}')
+    # check if files exist
+    if not os.path.exists(args.in_bam):
+        raise ValueError(f'BAM file {args.in_bam} not found.')
+    # write a fresh bam file with "Chromosome" as reference name (required for proper execution of tb-profiler)
+    cmd = f"\
+        samtools view -h {args.in_bam} | sed 's/NC_000962\.3/Chromosome/g' | samtools view -b -o {tmp_dir}/{args.output}.bam"
+    vt.contShell(cmd)
+    # run tb-profiler, save results file
+    cmd = f'\
+        cd {tmp_dir} && tb-profiler profile --threads {args.threads} --external_db database/tbdb --bam {args.output}.bam --no_delly 2>&1'
+    vt.contShell(cmd)
+    cmd = f'\
+        mv {tmp_dir}/results/tbprofiler.results.json {base_dir}/{args.output}.tbprofiler.json'
+    vt.contShell(cmd)
+elif args.in_fastq != 'None':
+    print(f'running on fastq input {args.in_fastq}')
+    # check if paired end / single end / undetermined
+    fin_path = f'{args.in_fastq}.fastq'
+    fin_path1 = f'{args.in_fastq}_1.fastq'
+    fin_path2 = f'{args.in_fastq}_2.fastq'
+    if os.path.exists(fin_path1) and os.path.exists(fin_path2):
+        is_paired = True
+    elif os.path.exists(fin_path):
+        is_paired = False
+    else:
+        raise ValueError('No fastqs matching expected PE or SE patterns.\n' + '\n'.join([fin_path, 'or...', fin_path1, fin_path2]))
+    # prepare tbprofiler run
+    if is_paired:
+        cmd = f'\
+            cd {tmp_dir} && tb-profiler profile --threads {args.threads} --external_db database/tbdb --no_delly \
+            -1 {os.path.abspath(fin_path1)} -2 {os.path.abspath(fin_path2)} 2>&1'
+    else:
+        cmd = f'\
+            cd {tmp_dir} && tb-profiler profile --threads {args.threads} --external_db database/tbdb --no_delly \
+            -1 {os.path.abspath(fin_path)} 2>&1'
+    # run tbprofiler, save results file
+    vt.contShell(cmd)
+    cmd = f'\
+        mv {tmp_dir}/results/tbprofiler.results.json {base_dir}/{args.output}.tbprofiler.json'
+    vt.contShell(cmd)
+else:
+    raise ValueError('Provide one of --in-bam or --in-fastq')
 
 # get lineage and conflict calls, write to results file
 results_df = pd.DataFrame(
