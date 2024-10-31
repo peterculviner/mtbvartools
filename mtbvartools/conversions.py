@@ -4,7 +4,6 @@ from pastml.acr import pastml_pipeline
 import numpy as np
 import pandas as pd
 from time import sleep
-from dask.distributed import TimeoutError
 from .KeyedByteArray import KeyedByteArray
 from .CallBytestream import CallBytestream
 from .trees import writeLabelledTree
@@ -100,9 +99,10 @@ def writeAncestorCalls(
     def acrJobHandler(job_slices, vcb_path, output_path, method, miss_filter):
         # try with a timeout
         try:
-            ## TIMEOUT FUNCTION
             return [acrJob(job_slices, vcb_path, output_path, method, miss_filter)]
         except TimeoutError:
+            shutil.rmtree(  # remove timed out directory
+                f'{output_path}/AR_TMP_{job_slices[0]}_{job_slices[1]}')
             singlet_output = []
             for left in range(job_slices[0], job_slices[1]):
                 try:
@@ -111,6 +111,8 @@ def writeAncestorCalls(
                 except TimeoutError:
                     singlet_output.append(
                         RuntimeWarning(f'Handled timeout at index {left}'))
+                    shutil.rmtree(  # remove timed out directory
+                        f'{output_path}/AR_TMP_{left}_{left + 1}')
             return singlet_output
     
     # define ancestral reconstruction job
@@ -203,17 +205,15 @@ def writeAncestorCalls(
         sleep(0.001)
     with open(f'{output_path}/acr_summary.csv', 'w') as summary_file:
         # handle first future
-        first_columns, summary_csv, pointers, compressed_bytes, raw_byte_count = futures[0].result()
-        summary_file.write(summary_csv)
+        first_columns, summary_csv, _, _, _ = futures[0].result()[0]
+        summary_file.write(
+            summary_csv[:summary_csv.find('\n') + 1])
         output_kba = KeyedByteArray(  # initialize output
             f'{output_path}/by_variant.kba', mode='w', columns=first_columns, dtype=target_vcb.calls.dtype,
             compression=target_vcb.calls.index['compression']['compression_type'],
             compression_kwargs=target_vcb.calls.index['compression']['kwargs'])
-        # write the pre-compressed data
-        output_kba.writebinary(pointers, compressed_bytes, raw_byte_count)
-        futures[0].release()
         # gather outputs as futures complete
-        for js, f in tqdm.tqdm(list(zip(job_slices[1:], futures[1:]))):
+        for js, f in tqdm.tqdm(list(zip(job_slices, futures))):
             results = f.result()  # handle list of results in future
             for r in results:
                 if r is None:  # handle situation with all missing results

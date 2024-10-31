@@ -4,6 +4,7 @@ from dask.distributed import get_client, LocalCluster
 from dask_jobqueue import SLURMCluster
 import multiprocess as mp
 from functools import wraps
+from queue import Empty
 
 def subproc(func):
     """
@@ -46,18 +47,19 @@ def timedsubproc(timeout):
                 process = mp.Process(  # pass queue and this function
                     target=wrapper, args=args, kwargs={'_subproc': True, '_queue': queue, **kwargs})
                 process.start()
-                process.join(timeout=timeout)
-                if process.is_alive():  # waited for process to complete, terminating instead
+                try:
+                    output = queue.get(timeout=timeout)
+                    process.join()
+                    process.close()
+                    return output
+                except Empty:
                     process.terminate()
                     process.join()
                     process.close()
                     raise TimeoutError(f'timeout expired at {timeout}')
-                else:
-                    output = queue.get()
-                    process.close()
-                    return output
         return wrapper
     return decorator
+
 
 
 def findClient(n_workers=None, threads_per_worker=1, **kwargs):
