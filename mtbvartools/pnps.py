@@ -6,7 +6,7 @@ from Bio import SeqIO
 def getCodonMask(global_mask, start, end):
     # expand mask to all codons and apply to same shape as global mask
     if (end - start) % 3 != 0:
-        raise ValueError('Input region should be divisible by three because codons.')
+        return ValueError('Input region should be divisible by three because codons.')
     codon_rows = global_mask[start:end].reshape(-1, 3).copy()
     codon_mask = np.any(codon_rows, axis=1)
     codon_rows[codon_mask, :] = True
@@ -34,6 +34,7 @@ def getSynNSynCounts(fasta_path, start, end, codon_mask, k=1, is_rev=False):
         codon = gene_seq[i:i+3]
         if codon in ['TAG', 'TGA', 'TAA']:
             print(f'WARNING: prestop found between {start} and {end}')
+            continue
         syn_sites, ns_sites = _count_site_NG86(
             [codon],
             CodonTable.standard_dna_table, k=k)
