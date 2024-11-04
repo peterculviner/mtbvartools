@@ -54,6 +54,35 @@ def getJSONValues(filename, keys_list):
     return pd.Series(
         {label: chainLookup(keys, loaded_json) for label, keys in keys_list})
 
+def getNearbyGenes(pos, gene_table):
+    output_dict = {}
+    # ZERO INDEXED POS
+    # prepare values for inside genes
+    inside = gene_table.index[np.all([gene_table.start <= pos, gene_table.end >= pos], axis=0)]
+    dinside = []
+    for geneid in inside:
+        if gene_table.loc[geneid, 'strand'] == 0:
+            dinside.append(str(gene_table.loc[geneid, 'start'] - pos))
+        elif gene_table.loc[geneid, 'strand'] == 1:
+            dinside.append(str(gene_table.loc[geneid, 'end'] - pos))
+    output_dict['inside'] = ','.join(inside)
+    output_dict['dinside'] = ','.join(dinside)
+    # left gene
+    try:
+        output_dict['left'] = gene_table.index[gene_table.end < pos][-1]
+        output_dict['dleft'] = str(gene_table.loc[output_dict['left'], 'end'] - pos)
+    except IndexError:
+        output_dict['left'] = ''
+        output_dict['dleft'] = ''
+    # right gene
+    try:
+        output_dict['right'] = gene_table.index[gene_table.start > pos][0]
+        output_dict['dright'] = str(gene_table.loc[output_dict['right'], 'start'] - pos)
+    except IndexError:
+        output_dict['right'] = ''
+        output_dict['dright'] = ''
+    return output_dict
+
 class StopWatch():
     def start(self, name, flat_file=None):
         if name not in self.ignore:

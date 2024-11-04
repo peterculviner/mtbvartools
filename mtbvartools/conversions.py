@@ -8,7 +8,7 @@ from .KeyedByteArray import KeyedByteArray
 from .CallBytestream import CallBytestream
 from .trees import writeLabelledTree
 from .dasktools import subproc, timedsubproc, findClient
-from .misc import getSlices
+from .misc import getSlices, getNearbyGenes
 
 def writeVariantCalls(
         target_vcf, output_path,
@@ -236,6 +236,14 @@ def writeAncestorCalls(
         output_kba = KeyedByteArray(f'{output_path}/by_variant.kba', mode='r')
         output_kba.rechunk(f'{output_path}/by_node.kba', jobs=rechunk_jobs)
         output_kba.close()
+    # add pos / ref / alt index to summary csv
+    summary_df = pd.read_csv(
+        f'{output_path}/acr_summary.csv', index_col=0)
+    ancestor_calls = CallBytestream(
+        output_path, init_calls=True, init_nodes=False)
+    summary_df.index = pd.MultiIndex.from_tuples(
+        ancestor_calls.calls.row, names=['pos', 'ref', 'alt'])
+    summary_df.to_csv(f'{output_path}/acr_summary.csv')
 
 
 def writeEventTransitions(ancestor_calls, output_path, tree_obj, rechunk=True):
@@ -311,7 +319,7 @@ def countReversionEvents(node_kba_path, tree_obj):
     return reversions_to_ref, reversions_to_alt
 
 
-def writeEventCalls(acr_path, var_path, output_path):
+def writeEventCalls(acr_path, var_path, output_path, annotations_csv=None, gene_table_csv=None):
     # load in call bytestreams
     ancestor_calls = CallBytestream(acr_path)
     # load in tree object and pastml output
@@ -323,7 +331,7 @@ def writeEventCalls(acr_path, var_path, output_path):
     for leaf in tree_obj.leaf_nodes():
         leaf.label = leaf.taxon.label
     acr_output_df = pd.read_csv(
-        f'{acr_path}/pastml_outputs.csv', index_col=0)
+        f'{acr_path}/acr_summary.csv', index_col=[0, 1, 2])
     # initialize VCB at output path
     os.makedirs(output_path, exist_ok=True)
     ttr, tta = writeEventTransitions(  # write event transitions to keyed byte array
@@ -349,6 +357,27 @@ def writeEventCalls(acr_path, var_path, output_path):
     acr_output_df.loc[:, 'reversions_to_alt'] = rta
     acr_output_df.loc[:, 'miss_count'] = call_counts.miss_count.values
     # write files to vcb
-    acr_output_df.to_csv(f'{output_path}/event_call_outputs.csv')
+    acr_output_df.to_csv(f'{output_path}/event_calls.raw.csv')
     shutil.copy(f'{acr_path}/tree.nwk', f'{output_path}/tree.nwk')
-    return acr_output_df
+    # write other event calls
+    if annotations_csv != None:
+        print('merging gene-level annotations....')
+        # merge onto vcf_annotations to count vcf annotations in file
+        annotated_events = pd.merge(
+            acr_output_df,
+            pd.read_csv(annotations_csv, index_col=['pos', 'ref', 'alt']),
+            how='right',
+            left_index=True, right_index=True)
+        annotated_events.to_csv(f'{output_path}/event_calls.annotated.csv')
+    if gene_table_csv != None:
+        print('writing genomic annotations....')
+        gene_table = pd.read_csv(gene_table_csv, index_col=0)
+        nearby_data = []
+        for pos in tqdm.tqdm(acr_output_df.index.get_level_values('pos')):
+            nearby_data.append(getNearbyGenes(pos - 1, gene_table))
+        nearby_df = pd.DataFrame(
+            index=acr_output_df.index,
+            data=nearby_data)
+        pd.merge(
+            acr_output_df, nearby_df,
+            left_index=True, right_index=True).to_csv(f'{output_path}/event_calls.genomic.csv')
