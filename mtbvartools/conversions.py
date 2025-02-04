@@ -246,7 +246,7 @@ def writeAncestorCalls(
     summary_df.to_csv(f'{output_path}/acr_summary.csv')
 
 
-def writeEventTransitions(ancestor_calls, output_path, tree_obj, rechunk=True):
+def writeEventTransitions(ancestor_calls, output_path, tree_obj, rechunk_jobs=None):
     os.makedirs(output_path, exist_ok=True)
     by_node_kba = KeyedByteArray(
         f'{output_path}/by_node.kba', mode='w', columns=ancestor_calls.nodes.col, dtype='uint8',
@@ -275,12 +275,11 @@ def writeEventTransitions(ancestor_calls, output_path, tree_obj, rechunk=True):
             output_vector[ttr_mask] = 2  # transition to REF is 2
             by_node_kba.write(cnode.label, output_vector)
     by_node_kba.close()
-    if rechunk:
-        # reopen and rechunk to complete vcb file
-        by_node_kba = KeyedByteArray(
-            f'{output_path}/by_node.kba', mode='r')
-        by_node_kba.rechunk(f'{output_path}/by_variant.kba')
-        by_node_kba.close()
+    if rechunk_jobs != None:
+        # rechunk output_kba
+        output_kba = KeyedByteArray(f'{output_path}/by_node.kba', mode='r')
+        output_kba.rechunk(f'{output_path}/by_variant.kba', jobs=rechunk_jobs)
+        output_kba.close()
     return transitions_to_ref, transitions_to_alt
 
 
@@ -319,7 +318,7 @@ def countReversionEvents(node_kba_path, tree_obj):
     return reversions_to_ref, reversions_to_alt
 
 
-def writeEventCalls(acr_path, var_path, output_path, annotations_csv=None, gene_table_csv=None):
+def writeEventCalls(acr_path, var_path, output_path, annotations_csv=None, gene_table_csv=None, rechunk_jobs=None):
     # load in call bytestreams
     ancestor_calls = CallBytestream(acr_path)
     # load in tree object and pastml output
@@ -335,7 +334,7 @@ def writeEventCalls(acr_path, var_path, output_path, annotations_csv=None, gene_
     # initialize VCB at output path
     os.makedirs(output_path, exist_ok=True)
     ttr, tta = writeEventTransitions(  # write event transitions to keyed byte array
-        ancestor_calls, output_path, tree_obj)
+        ancestor_calls, output_path, tree_obj, rechunk_jobs=rechunk_jobs)
     rtr, rta = countReversionEvents(  # count reversions
         f'{output_path}/by_node.kba', tree_obj)
     variant_calls = CallBytestream(var_path)

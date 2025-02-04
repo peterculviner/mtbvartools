@@ -51,9 +51,10 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
     
     @subproc
     def deleteInputs(parent_future, vcf_list):
-        for path in vcf_list:
-            os.remove(path)
-            os.remove(f'{path}.tbi')
+        pass
+        # for path in vcf_list:
+        #     os.remove(path)
+        #     os.remove(f'{path}.tbi')
 
 
     def treeMerge(vcf_list, output_stub, genome_len, default_merge=10, genome_splits=2, threads=1, tmp_dir='tmp', output_dir='.', merge_dict={1: 20}):
