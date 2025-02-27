@@ -29,7 +29,7 @@ args, _ = parser.parse_known_args()
 # dealing with failure to connect to SRA
 download_attempts = 3
 
-tmp_dir = f'{args.tmp_path}/sra_download'
+tmp_dir = f'{args.tmp_path}/{args.output}/sra_download'
 os.makedirs(tmp_dir, exist_ok=True)
 base_dir = f'{args.dir}/{args.output}/sra_download'
 os.makedirs(base_dir, exist_ok=True)
