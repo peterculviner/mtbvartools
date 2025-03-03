@@ -42,7 +42,7 @@ if __name__ == '__main__':  # required for multiprocessing with dask "process" w
     
     # multithreading options
     parser.add_argument(
-            '--local-threads', type=int, default=1)
+        '--local-threads', type=int, default=1)
 
     args = parser.parse_args()
 

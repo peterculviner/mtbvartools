@@ -78,7 +78,7 @@ for sra_input, suffix in data_inputs:
                 f'prefetch -O {sra_dir} {sra_input}')
             break
         except subprocess.CalledProcessError as cpe:
-            sleep_time = random.randint(0, 10)
+            sleep_time = random.randint(0, 120)
             print(f'failed download on try {ntry + 1} retrying in {sleep_time} seconds.')
             time.sleep(sleep_time)
     # downloaded, now extract

@@ -1,0 +1,34 @@
+name: mtbvartools
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - anaconda::ipykernel
+  - conda-forge::setuptools
+  - conda-forge::pip
+  - conda-forge::pandas
+  - conda-forge::numpy
+  - conda-forge::zarr
+  - conda-forge::dask
+  - conda-forge::dask-jobqueue
+  - conda-forge::biopython
+  - conda-forge::multiprocess
+  - conda-forge::rechunker
+  - conda-forge::tqdm
+  - bioconda::pysam
+  - bioconda::sra-tools
+  - bioconda::fastp
+  - bioconda::bwa
+  - bioconda::samtools
+  - bioconda::bcftools
+  - bioconda::tb-profiler
+  - bioconda::breseq
+  - bioconda::dendropy
+  - bioconda::iqtree
+  - bioconda::pastml
+  - bioconda::gatk4
+  - ca-certificates
+  - certifi
+  - openssl
+
+prefix: /home/pculviner/miniforge3/envs/mtbvartools

@@ -1,6 +1,6 @@
 #!/usr/bin/env -S python -u
 
-import argparse, os, pysam, zarr, sys, timeit, glob
+import argparse, os, pysam, zarr, sys, timeit
 import pandas as pd
 import numpy as np
 import os.path

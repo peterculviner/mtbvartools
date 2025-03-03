@@ -4,7 +4,6 @@ import argparse, os, sys, zarr, pysam, re
 import numpy as np
 import pandas as pd
 import mtbvartools as vt
-from zarr.errors import PathNotFoundError
 
 def reformatBreseqVCF(input_vcf, output_vcf, label):
     with open(input_vcf, 'r') as fin, open(output_vcf, 'w') as fout:
@@ -56,7 +55,7 @@ def bcftoolsStats(bcftools_keys, filename):
 def getBreseqMiss(filename):
     try:
         return pd.Series({'breseq_miss_count': zarr.open(filename, 'r')[:].sum()})
-    except PathNotFoundError:
+    except:
         return pd.Series({'breseq_miss_count': np.nan})
 
 # argument handling

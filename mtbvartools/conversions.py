@@ -1,5 +1,4 @@
 import pysam, shutil, os, tqdm, dendropy, shutil
-from pathlib import Path
 from pastml.acr import pastml_pipeline
 import numpy as np
 import pandas as pd
